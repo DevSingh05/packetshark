@@ -6,6 +6,8 @@ Notable changes to packetshark. The format follows
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-12
+
 ### Added
 
 - `:graph` shows packets (or bytes) over time as a bar chart; Enter filters

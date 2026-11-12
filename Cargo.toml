@@ -1,6 +1,6 @@
 [package]
 name = "packetshark"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A fast terminal UI for Wireshark: packet list, dissection tree and hex view, powered by sharkd"
