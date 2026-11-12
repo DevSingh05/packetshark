@@ -6,13 +6,14 @@ Notable changes to packetshark. The format follows
 
 ## Unreleased
 
+## 0.2.0 - 2026-11-12
+
 ### Added
 
 - Colour themes: five built in, your own as small TOML files, chosen with
   `:theme` and remembered.
 - A column editor (`:columns`) to reorder, hide, rename, add and delete
   columns, including the Wireshark profile's own.
-
 - Tab completion on the command line, for commands, their arguments and
   file names.
 - Marks as in vim: `ma` sets one, `'a` goes to it, `''` goes back. An
