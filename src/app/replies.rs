@@ -214,6 +214,10 @@ impl App {
                     self.refresh_list();
                 }
                 self.count_displayed();
+                if first && self.capture.is_none() && self.tail.is_none() {
+                    let source = self.source.clone();
+                    self.remember_capture(&source);
+                }
                 if first {
                     // Marks and the way back belong to the capture that was open.
                     self.local_marks.clear();

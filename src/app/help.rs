@@ -185,6 +185,11 @@ pub const SECTIONS: &[Section] = &[
             (":colors <mode>", "Packet row colours: wireshark, tint, off"),
             (":layout <name>", "stacked, side"),
             (":open <file>", "Open another capture"),
+            (":recent", "Open a capture opened lately"),
+            (
+                ":info",
+                "The capture file's properties: format, size, time span",
+            ),
             (":reload", "Reload the capture"),
             (":stop", "Stop a live capture"),
             (":quit", "Quit"),

@@ -52,6 +52,8 @@ impl App {
             "w" | "write" | "export" | "save" => self.export(arg),
             "marked" => self.show_marked(),
             "marks" => self.marks_menu(),
+            "recent" | "recents" => self.recent_menu(),
+            "info" | "capinfo" | "properties" => self.capture_properties(),
             "map" => self.map_key(arg),
             "unmap" => {
                 if arg.is_empty() {

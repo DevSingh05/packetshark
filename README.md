@@ -28,7 +28,8 @@ rule and preference Wireshark has works here, with the same results.
   text, hex dump or raw bytes; search it, save the payload or filter down to
   the stream.
 - **Statistics**: conversations, endpoints, protocol hierarchy, expert
-  information, per-protocol trees, and exporting objects (HTTP, SMB, TFTP, ...).
+  information, per-protocol trees, exporting objects (HTTP, SMB, TFTP, ...),
+  and the capture file's own properties.
 - **Find** in packet bytes, in the details or in the summary, as text, a
   regular expression, hex or a filter expression, with the match pointed
   out where it lands; **go to** a packet; vim-style
@@ -291,6 +292,8 @@ and a hint:
 | `:colors <mode>`          | Packet row colours: wireshark, tint, off                      |
 | `:layout <name>`          | stacked, side                                                 |
 | `:open <file>`            | Open another capture                                          |
+| `:recent`                 | Open a capture opened lately                                  |
+| `:info`                   | The capture file's properties: format, size, time span        |
 | `:reload`                 | Reload the capture                                            |
 | `:stop`                   | Stop a live capture                                           |
 | `:quit`                   | Quit                                                          |

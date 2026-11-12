@@ -2797,3 +2797,78 @@ fn a_conversation_can_be_filtered_by_direction_or_combined() {
     );
     assert_eq!(h.app.filter.applied, "");
 }
+
+#[test]
+fn capture_properties_and_recent_captures() {
+    use packetshark::config::Store;
+    let scratch = tempfile::tempdir().unwrap();
+    let store = Store::at(scratch.path().join("state.toml"));
+    let first = scratch.path().join("first.pcap");
+    let second = scratch.path().join("second.pcap");
+    pcap::web().write(&first);
+    pcap::many(40).write(&second);
+    let options = || Options {
+        store: store.clone(),
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::start(
+        tempfile::tempdir().unwrap(),
+        first.clone(),
+        100,
+        30,
+        options(),
+    ) else {
+        return;
+    };
+    h.settle();
+
+    // What the file is. With capinfos installed this is its report; without,
+    // what is known anyway. Either way the packet count is there.
+    h.keys(":info\n");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !matches!(h.app.overlay, Some(Overlay::Text { .. })) {
+        assert!(Instant::now() < deadline, "no properties:\n{}", h.screen());
+        std::thread::sleep(Duration::from_millis(20));
+        h.settle();
+    }
+    h.assert_screen_contains("Capture file properties");
+    let screen = h.screen();
+    assert!(
+        screen.contains("21"),
+        "the packet count is shown:\n{screen}"
+    );
+    h.keys("jjkG");
+    h.key(KeyCode::Esc);
+    assert!(h.app.overlay.is_none());
+
+    // Nothing else has been opened yet.
+    h.keys(":recent\n");
+    assert!(h.message().contains("No other captures"), "{}", h.message());
+    h.keys(&format!(":open {}\n", second.display()));
+    assert_eq!(h.app.frames(), 40);
+    // Now the first one is on the list, and choosing it opens it.
+    h.keys(":recent\n");
+    h.assert_screen_contains("Recent captures");
+    let listed: Vec<String> = match &h.app.overlay {
+        Some(Overlay::Menu(menu)) => menu.items.iter().map(|i| i.label.clone()).collect(),
+        _ => panic!("no menu:\n{}", h.screen()),
+    };
+    assert_eq!(
+        listed.len(),
+        1,
+        "the capture that is open is not offered: {listed:?}"
+    );
+    assert!(listed[0].ends_with("first.pcap"), "{listed:?}");
+    h.keys("a");
+    assert_eq!(h.app.frames(), 21);
+    drop(h);
+
+    // Both are remembered by the next run, the latest first.
+    let state = store.load();
+    let names: Vec<String> = state
+        .recent_files
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["first.pcap", "second.pcap"]);
+}

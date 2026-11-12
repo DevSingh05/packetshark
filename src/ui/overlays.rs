@@ -74,6 +74,58 @@ pub fn help(app: &mut App, buf: &mut Buffer, body: Rect) {
     }
 }
 
+/// Plain text to read: a window that scrolls.
+pub fn text(app: &mut App, buf: &mut Buffer, body: Rect) {
+    let Some(Overlay::Text { title, lines, .. }) = &app.overlay else {
+        return;
+    };
+    let longest = lines.iter().map(|l| width(l)).max().unwrap_or(0) as u16;
+    let w = (longest + 4)
+        .max(width(title) as u16 + 6)
+        .max(30)
+        .min(body.width);
+    let h = (lines.len() as u16 + 2).min(body.height);
+    let title = title.clone();
+    let inner = popup(app, buf, body, w, h, &title);
+    app.areas.overlay = inner;
+    let style = app.theme.popup;
+    let Some(Overlay::Text { lines, top, .. }) = &mut app.overlay else {
+        return;
+    };
+    *top = (*top).min(lines.len().saturating_sub(inner.height as usize));
+    for (row, line) in lines
+        .iter()
+        .skip(*top)
+        .take(inner.height as usize)
+        .enumerate()
+    {
+        put(
+            buf,
+            inner.x + 1,
+            inner.y + row as u16,
+            inner.width.saturating_sub(2),
+            line,
+            style,
+        );
+    }
+    if lines.len() > inner.height as usize {
+        let more = format!(
+            " {}–{} of {} ",
+            *top + 1,
+            *top + inner.height as usize,
+            lines.len()
+        );
+        put_right(
+            buf,
+            inner.x,
+            inner.y + inner.height.saturating_sub(1),
+            inner.width,
+            &more,
+            style,
+        );
+    }
+}
+
 /// The column editor: every column, shown or hidden, in order.
 pub fn columns(app: &mut App, buf: &mut Buffer, body: Rect) {
     let Some(Overlay::Columns(editor)) = &app.overlay else {

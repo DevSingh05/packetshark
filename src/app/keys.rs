@@ -815,6 +815,14 @@ impl App {
                     *top = (*top as i64).saturating_add(delta(m, height)).max(0) as usize;
                 }
             }
+            Some(Overlay::Text { top, .. }) => {
+                if closes {
+                    self.overlay = None;
+                } else if let Some(m) = motion(key) {
+                    let height = self.areas.overlay.height;
+                    *top = (*top as i64).saturating_add(delta(m, height)).max(0) as usize;
+                }
+            }
             Some(Overlay::Menu(menu)) => {
                 let n = menu.items.len() as i64;
                 let chosen = match key.code {
@@ -1040,7 +1048,9 @@ impl App {
         if let Some(overlay) = &mut self.overlay {
             if let Some(step) = wheel {
                 match overlay {
-                    Overlay::Help { top } => *top = (*top as i64 + step).max(0) as usize,
+                    Overlay::Help { top } | Overlay::Text { top, .. } => {
+                        *top = (*top as i64 + step).max(0) as usize;
+                    }
                     Overlay::Follow(view) => view.scroll_by(step),
                     Overlay::Stats(view) => view.move_by(step),
                     Overlay::Menu(_) | Overlay::Columns(_) => {}

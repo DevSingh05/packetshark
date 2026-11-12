@@ -54,6 +54,12 @@ pub enum Event {
         ok: bool,
         message: String,
     },
+    /// A background job produced text to read, such as the capture file's
+    /// properties.
+    Report {
+        title: String,
+        text: Result<String, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,11 +133,19 @@ pub struct Menu {
 
 #[derive(Debug)]
 pub enum Overlay {
-    Help { top: usize },
+    Help {
+        top: usize,
+    },
     Menu(Menu),
     Follow(Box<FollowView>),
     Stats(Box<StatsView>),
     Columns(ColumnEditor),
+    /// Plain text to read and scroll.
+    Text {
+        title: String,
+        lines: Vec<String>,
+        top: usize,
+    },
 }
 
 /// The share of the screen each pane starts with: list, details, bytes.
@@ -564,6 +578,20 @@ impl App {
             Event::Job { ok, message } => {
                 self.say(if ok { Level::Info } else { Level::Error }, message);
             }
+            Event::Report { title, text } => match text {
+                Ok(text) => {
+                    self.message = None;
+                    self.overlay = Some(Overlay::Text {
+                        title,
+                        lines: text
+                            .lines()
+                            .map(|l| crate::util::sanitize(l).into_owned())
+                            .collect(),
+                        top: 0,
+                    });
+                }
+                Err(e) => self.error(e),
+            },
         }
         self.request_pages();
         self.sync_detail();
@@ -1727,6 +1755,90 @@ impl App {
             Action::Stats(kind) => self.open_stats(kind, None),
             Action::Command(line) => self.run_command(&line),
         }
+    }
+
+    // ---- the capture file ------------------------------------------------
+
+    /// Show what the capture file is: its format, size, time span and so
+    /// on, as `capinfos` reports them.
+    pub(super) fn capture_properties(&mut self) {
+        let Some(status) = &self.status else {
+            return self.info("Open a capture first.");
+        };
+        // What is known without help, shown if capinfos is not installed.
+        let ours = format!(
+            "File:      {}\nPackets:   {}\nDuration:  {}\nSize:      {}\n\nInstall Wireshark's capinfos for the full properties.",
+            self.source.display(),
+            crate::util::thousands(u64::from(status.frames)),
+            crate::util::human_duration(status.duration),
+            status
+                .filesize
+                .map_or_else(|| "unknown".to_string(), crate::util::human_bytes),
+        );
+        let title = format!("Capture file properties: {}", self.title);
+        let Some(capinfos) = crate::capture::locate_tool("capinfos", self.sharkd_path()) else {
+            self.overlay = Some(Overlay::Text {
+                title,
+                lines: ours.lines().map(str::to_string).collect(),
+                top: 0,
+            });
+            return;
+        };
+        let source = self.source.clone();
+        let events = self.events.clone();
+        self.info("Reading the capture file's properties…");
+        std::thread::spawn(move || {
+            let text = std::process::Command::new(&capinfos)
+                .arg(&source)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map_err(|e| format!("could not run {}: {e}", capinfos.display()))
+                .and_then(|out| {
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                    if text.trim().is_empty() {
+                        let why = String::from_utf8_lossy(&out.stderr);
+                        Err(format!(
+                            "capinfos could not read the file: {}",
+                            why.lines().next().unwrap_or("no reason given").trim()
+                        ))
+                    } else {
+                        Ok(text)
+                    }
+                });
+            let _ = events.send(Event::Report { title, text });
+        });
+    }
+
+    /// Note that `path` was opened, for the list of recent captures.
+    pub(super) fn remember_capture(&mut self, path: &Path) {
+        const KEEP: usize = 20;
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.state.recent_files.retain(|p| *p != path);
+        self.state.recent_files.insert(0, path);
+        self.state.recent_files.truncate(KEEP);
+        self.save_state();
+    }
+
+    /// The captures opened lately, to pick one from.
+    pub(super) fn recent_menu(&mut self) {
+        let here = std::fs::canonicalize(&self.source).ok();
+        let keys = "abcdefghijklmnopqrstuvwxyz";
+        let items: Vec<MenuItem> = self
+            .state
+            .recent_files
+            .iter()
+            .filter(|p| Some(*p) != here.as_ref())
+            .zip(keys.chars())
+            .map(|(path, key)| MenuItem {
+                key,
+                label: path.display().to_string(),
+                action: Action::Command(format!("open {}", path.display())),
+            })
+            .collect();
+        if items.is_empty() {
+            return self.info("No other captures have been opened yet.");
+        }
+        self.open_menu("Recent captures", items);
     }
 
     // ---- remembered choices and themes -----------------------------------

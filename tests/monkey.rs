@@ -85,6 +85,8 @@ const PHRASES: &[&str] = &[
     ":theme default\n",
     ":marked\n",
     ":marks\n",
+    ":info\n",
+    ":recent\n",
     ":map <f5> :conv<enter>\n",
     ":map j jj\n",
     ":map T jjj/tcp<enter>\n",
@@ -203,6 +205,7 @@ fn place(app: &App) -> &'static str {
         Some(Overlay::Follow(_)) => "follow stream",
         Some(Overlay::Stats(_)) => "statistics",
         Some(Overlay::Columns(_)) => "column editor",
+        Some(Overlay::Text { .. }) => "text window",
         None => match app.focus {
             Focus::Filter => "filter bar",
             Focus::List => "packet list",

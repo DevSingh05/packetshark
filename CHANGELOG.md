@@ -27,6 +27,8 @@ Notable changes to packetshark. The format follows
   the stream and how often it changed sides.
 - In the conversation and endpoint tables, `a` and `p` filter on one
   direction only, or combine the row with the filter in use.
+- `:info` shows the capture file's properties, and `:recent` lists the
+  captures opened lately.
 - Key mappings: `:map <f5> :conv<enter>` makes a key type a sequence of
   keys, written as in vim, and is remembered.
 - `25G` and `25gg` go to a row; `Ctrl-w w` and `Ctrl-w =` switch pane and
