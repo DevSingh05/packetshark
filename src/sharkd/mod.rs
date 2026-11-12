@@ -4,5 +4,5 @@ pub mod client;
 pub mod types;
 pub mod worker;
 
-pub use client::{Client, Error, Launch, locate};
+pub use client::{Client, Error, Launch, locate, version};
 pub use worker::{Purpose, Reply, Request, Seek, Worker};

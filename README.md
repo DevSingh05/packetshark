@@ -60,6 +60,10 @@ If `sharkd` is somewhere unusual, point to it with `--sharkd PATH`, the
 `PACKETSHARK_SHARKD` environment variable, or `sharkd = "..."` in the config
 file.
 
+Wireshark 3.6 and newer work. The test suite runs against 3.6, 4.0, 4.2 and
+4.6, which are what Ubuntu 22.04, Debian 12, Ubuntu 24.04 and current
+systems ship.
+
 ## Use
 
 ```sh
@@ -299,9 +303,10 @@ dropped the rest.
 - **Unix only so far.** It is developed on macOS and tested on macOS and
   Linux. Windows is untested, and Wireshark's Windows installer does not
   include sharkd.
-- **Tested against Wireshark 4.6** (4.6.4 on Linux, 4.6.9 on macOS). Other
-  versions that have sharkd should work, with fewer features where sharkd
-  offers less.
+- **Older Wireshark has less to offer.** Protocol hierarchy statistics need
+  4.2 and time references need 4.0; packetshark says so when you ask for
+  them. Before 4.2 the delta times in the details pane are relative to the
+  previous packet in the file even when a filter hides it.
 - **Added columns last for the session.** Columns you want every time belong
   in your Wireshark profile, which packetshark reads.
 - Live capture was verified with a scripted stand-in for dumpcap, not against

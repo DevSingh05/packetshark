@@ -16,7 +16,7 @@ fn talks_to_the_real_sharkd() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("t.pcap");
     pcap::web().write(&path);
-    let mut c = Client::spawn(&Launch::new(sharkd)).unwrap();
+    let mut c = Client::spawn(&Launch::new(sharkd.clone())).unwrap();
 
     let info: Info = c.call("info", Value::Null).unwrap();
     assert!(
@@ -29,7 +29,14 @@ fn talks_to_the_real_sharkd() {
     assert_eq!((loaded.status.as_str(), loaded.err), ("OK", 0));
     let status: Status = c.call("status", Value::Null).unwrap();
     assert_eq!(status.frames, 21);
-    assert!(status.column_info.iter().any(|col| col.title == "Info"));
+    // What the columns are is reported in full from 4.4, by title only in
+    // 4.2 and not at all before that.
+    let version = packetshark::sharkd::version(&sharkd).unwrap();
+    if version >= (4, 4) {
+        assert!(status.column_info.iter().any(|col| col.title == "Info"));
+    } else if version >= (4, 2) {
+        assert!(status.columns.iter().any(|title| title == "Info"));
+    }
 
     let rows: Vec<FrameRow> = c
         .call("frames", json!({ "filter": "http", "limit": 2 }))
@@ -37,9 +44,11 @@ fn talks_to_the_real_sharkd() {
     assert_eq!(rows.iter().map(|r| r.num).collect::<Vec<_>>(), [6, 8]);
     assert!(rows[0].bg.is_some(), "colouring rules are applied");
 
-    let frame: FrameDetail = c
+    let mut frame: FrameDetail = c
         .call("frame", json!({ "frame": 6, "proto": true, "bytes": true }))
         .unwrap();
+    // Before 4.2 sharkd gives only each field's filter, not its name.
+    frame.fill_field_names();
     let tcp = frame
         .tree
         .iter()

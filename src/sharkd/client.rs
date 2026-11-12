@@ -122,8 +122,8 @@ impl Client {
         })
     }
 
-    /// Send one request and parse its result as `T`.
-    pub fn call<T: DeserializeOwned>(&mut self, method: &str, params: Value) -> Result<T, Error> {
+    /// Write one request and return the id its reply will carry.
+    fn send(&mut self, method: &str, params: Value) -> Result<u64, Error> {
         let id = self.next_id;
         self.next_id += 1;
         let mut request = json!({ "jsonrpc": "2.0", "id": id, "method": method });
@@ -135,8 +135,12 @@ impl Client {
         text.push('\n');
         self.stdin.write_all(text.as_bytes()).map_err(Error::Io)?;
         self.stdin.flush().map_err(Error::Io)?;
+        Ok(id)
+    }
 
-        let reply = loop {
+    /// Read the next reply, whichever request it answers.
+    fn read_reply<T: DeserializeOwned>(&mut self, method: &str) -> Result<Reply<T>, Error> {
+        loop {
             let mut line = OneLine::new(&mut self.stdout);
             let parsed = {
                 let mut de = serde_json::Deserializer::from_reader(&mut line);
@@ -146,21 +150,20 @@ impl Client {
             let (seen, blank, ended) = (line.bytes, line.blank, line.ended);
             line.finish().map_err(Error::Io)?;
             match parsed {
-                Ok(reply) => break reply,
+                Ok(reply) => return Ok(reply),
                 // The stream ended, before or part-way through a reply:
                 // sharkd is gone.
                 Err(_) if seen == 0 || ended => return Err(Error::Exited),
                 // An empty line between replies.
-                Err(_) if blank => continue,
+                Err(_) if blank => {}
                 Err(e) if e.is_io() => return Err(Error::Io(e.into())),
                 Err(e) => return Err(Error::Protocol(format!("{method}: {e}"))),
             }
-        };
-        if reply.id.is_some_and(|got| got != id) {
-            return Err(Error::Protocol(format!(
-                "{method}: reply is for another request"
-            )));
         }
+    }
+
+    /// The result a reply carries, or the error it reports.
+    fn unwrap_reply<T: DeserializeOwned>(reply: Reply<T>, method: &str) -> Result<T, Error> {
         if let Some(err) = reply.error {
             return Err(Error::Rpc {
                 code: err.code,
@@ -173,6 +176,51 @@ impl Client {
             None => serde_json::from_value(Value::Null)
                 .map_err(|_| Error::Protocol(format!("{method}: reply has no result"))),
         }
+    }
+
+    /// Send one request and parse its result as `T`.
+    pub fn call<T: DeserializeOwned>(&mut self, method: &str, params: Value) -> Result<T, Error> {
+        let id = self.send(method, params)?;
+        let reply = self.read_reply::<T>(method)?;
+        if reply.id.is_some_and(|got| got != id) {
+            return Err(Error::Protocol(format!(
+                "{method}: reply is for another request"
+            )));
+        }
+        Self::unwrap_reply(reply, method)
+    }
+
+    /// Load a capture and read back its status.
+    ///
+    /// The two requests are sent together because Wireshark before 4.2 sends
+    /// no reply at all to a `load` that reads some packets and then hits the
+    /// end of a file cut short mid-packet, which is what a capture still
+    /// being written looks like. The status reply arriving first is how that
+    /// is noticed; `None` for the load result means exactly that.
+    pub fn load<L, S>(&mut self, file: &Path) -> Result<(Option<L>, S), Error>
+    where
+        L: DeserializeOwned,
+        S: DeserializeOwned,
+    {
+        let load_id = self.send("load", json!({ "file": file }))?;
+        let status_id = self.send("status", Value::Null)?;
+        let first = self.read_reply::<Value>("load")?;
+        fn parse<T: DeserializeOwned>(value: Value, method: &str) -> Result<T, Error> {
+            serde_json::from_value(value).map_err(|e| Error::Protocol(format!("{method}: {e}")))
+        }
+        if first.id == Some(status_id) {
+            let status = Self::unwrap_reply(first, "status")?;
+            return Ok((None, parse(status, "status")?));
+        }
+        if first.id.is_some_and(|got| got != load_id) {
+            return Err(Error::Protocol("load: reply is for another request".into()));
+        }
+        // The status reply is read even if the load failed, to leave the
+        // pipe in step with the requests.
+        let status = self.read_reply::<Value>("status")?;
+        let loaded = Self::unwrap_reply(first, "load")?;
+        let status = Self::unwrap_reply(status, "status")?;
+        Ok((Some(parse(loaded, "load")?), parse(status, "status")?))
     }
 
     pub fn pid(&self) -> u32 {
@@ -264,6 +312,29 @@ impl<R: BufRead> Read for OneLine<'_, R> {
     }
 }
 
+/// The Wireshark version of the sharkd at `program`, as (major, minor).
+///
+/// This asks `sharkd -v` rather than using the `version` in sharkd's `info`
+/// reply, which is a git description that often holds no version at all.
+pub fn version(program: &Path) -> Option<(u32, u32)> {
+    let output = Command::new(program)
+        .arg("-v")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    parse_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Pick the version out of `Sharkd (Wireshark) 4.6.9 (Git commit ...)`.
+fn parse_version(banner: &str) -> Option<(u32, u32)> {
+    let rest = banner.split("(Wireshark)").nth(1)?.trim_start();
+    let mut parts = rest.split(|c: char| !c.is_ascii_digit());
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
+}
+
 /// Find the sharkd binary: an explicit path, `$PACKETSHARK_SHARKD`, `$PATH`, or
 /// the places Wireshark installs it that are often not on `$PATH`.
 pub fn locate(explicit: Option<&Path>) -> Result<PathBuf, String> {
@@ -319,6 +390,25 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_is_read_from_the_banner() {
+        let v = parse_version;
+        assert_eq!(
+            v("Sharkd (Wireshark) 4.6.9 (Git commit 2d548b197c75).\n\nCopyright"),
+            Some((4, 6))
+        );
+        assert_eq!(
+            v("Sharkd (Wireshark) 3.6.2 (Git v3.6.2 packaged as 3.6.2-2)"),
+            Some((3, 6))
+        );
+        assert_eq!(
+            v("Running as user \"root\".\nSharkd (Wireshark) 4.10.1."),
+            Some((4, 10))
+        );
+        assert_eq!(v("Git commit 2d548b197c75"), None);
+        assert_eq!(v(""), None);
+    }
     use std::io::Cursor;
 
     #[test]

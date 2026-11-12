@@ -370,6 +370,9 @@ impl App {
         let Some(num) = self.list.selected_num() else {
             return;
         };
+        if self.lacks("Time references", (4, 0)) {
+            return;
+        }
         if self.time_refs.remove(&num) {
             self.info(format!("Packet {num} is no longer a time reference."));
         } else {

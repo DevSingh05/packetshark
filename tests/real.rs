@@ -153,6 +153,9 @@ fn real_captures_can_be_explored_without_errors() {
             "expert",
             "objects",
         ] {
+            if command == "phs" && h.app.wireshark_version() < Some((4, 2)) {
+                continue;
+            }
             h.keys(&format!(":{command}\n"));
             let outcome = match &h.app.overlay {
                 Some(Overlay::Stats(view)) if view.loading => Some("never finished".to_string()),

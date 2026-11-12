@@ -346,6 +346,16 @@ fn a_time_reference_restarts_the_clock() {
     };
     h.keys("jj");
     h.ctrl('t');
+    if h.app.wireshark_version() < Some((4, 0)) {
+        // sharkd ignores time references before 4.0, and the app says so.
+        assert!(
+            h.message().contains("need Wireshark 4.0"),
+            "{}",
+            h.message()
+        );
+        assert!(h.app.time_refs.is_empty());
+        return;
+    }
     assert!(h.app.time_refs.contains(&3));
     assert!(
         h.line(FIRST_ROW + 2).contains("*REF*"),
@@ -439,7 +449,14 @@ fn an_invalid_filter_is_refused_with_the_reason() {
     };
     h.keys("/tcp.prt == 1");
     assert!(matches!(h.app.filter.validity, Validity::Invalid(_)));
-    h.assert_screen_contains("\"tcp.prt\" is not a valid protocol or protocol field");
+    // The wording is Wireshark's and differs between versions; what matters
+    // is that its reason is on screen.
+    let Validity::Invalid(reason) = h.app.filter.validity.clone() else {
+        unreachable!();
+    };
+    assert!(reason.len() > 10, "a real reason: {reason:?}");
+    let shown: String = reason.chars().take(24).collect();
+    h.assert_screen_contains(&shown);
     h.key(KeyCode::Enter);
     assert_eq!(h.app.filter.applied, "", "nothing was applied");
     assert_eq!(h.app.focus, Focus::Filter, "still editing");
@@ -1041,24 +1058,52 @@ fn statistics_can_be_limited_to_the_display_filter() {
     h.assert_screen_contains("40001");
 }
 
-#[test]
-fn protocol_hierarchy_and_expert_information() {
-    let Some(mut h) = Harness::open(&pcap::web()) else {
-        return;
-    };
+fn protocol_hierarchy(h: &mut Harness) {
     h.keys(":phs\n");
     h.assert_screen_contains("Protocol hierarchy");
     let (_, tcp) = h.find_line("tcp ").unwrap();
     assert!(tcp.contains("85.7") && tcp.contains("18"), "{tcp}");
     assert!(tcp.contains('█'), "share bar drawn: {tcp}");
     let (_, dns) = h.find_line("dns").unwrap();
-    assert!(
-        dns.starts_with("         dns"),
-        "indented under udp: {dns:?}"
-    );
-    h.keys("jjjj");
+    // Nested under udp, however many layers this Wireshark puts above it.
+    let (_, udp) = h.find_line("udp ").unwrap();
+    let indent = |line: &str| line.len() - line.trim_start().len();
+    assert_eq!(indent(&dns), indent(&udp) + 2, "{udp:?} / {dns:?}");
+    // Move down to the dns row, wherever this version puts it.
+    let on_dns = |h: &Harness| match &h.app.overlay {
+        Some(Overlay::Stats(view)) => {
+            view.selected_row().and_then(|r| r.filter.as_deref()) == Some("dns")
+        }
+        _ => false,
+    };
+    for _ in 0..12 {
+        if on_dns(h) {
+            break;
+        }
+        h.keys("j");
+    }
+    assert!(on_dns(h), "no dns row:\n{}", h.screen());
     h.key(KeyCode::Enter);
     assert_eq!(h.app.filter.applied, "dns");
+}
+
+#[test]
+fn protocol_hierarchy_and_expert_information() {
+    let Some(mut h) = Harness::open(&pcap::web()) else {
+        return;
+    };
+    if h.app.wireshark_version() < Some((4, 2)) {
+        // sharkd has no protocol hierarchy before 4.2, and the app says so.
+        h.keys(":phs\n");
+        assert!(
+            h.message().contains("need Wireshark 4.2"),
+            "{}",
+            h.message()
+        );
+        assert!(h.app.overlay.is_none());
+    } else {
+        protocol_hierarchy(&mut h);
+    }
 
     h.keys("x:expert\n");
     h.assert_screen_contains("Expert information");
@@ -1159,6 +1204,9 @@ fn the_statistics_menu_opens_each_view() {
         ('x', "Expert information"),
         ('o', "Export objects"),
     ] {
+        if key == 'h' && h.app.wireshark_version() < Some((4, 2)) {
+            continue;
+        }
         h.key(KeyCode::Char('S'));
         h.assert_screen_contains("Statistics");
         h.key(KeyCode::Char(key));
@@ -1640,10 +1688,10 @@ fn sharkd_is_restarted_if_it_dies() {
     };
     // Find our sharkd child and kill it, as a crash on a malformed packet would.
     let before = h.app.sharkd_pid();
-    std::process::Command::new("kill")
-        .args(["-9", &before.to_string()])
-        .status()
-        .unwrap();
+    // SAFETY: signalling a process this test started.
+    unsafe {
+        libc::kill(before as libc::pid_t, libc::SIGKILL);
+    }
     std::thread::sleep(Duration::from_millis(100));
 
     h.keys("j");

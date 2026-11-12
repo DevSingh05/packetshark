@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,7 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # The Ubuntu releases differ in the Wireshark they ship (3.6, 4.2 and
+        # 4.6 at the time of writing), which is what this is here to cover.
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +35,21 @@ jobs:
         run: sharkd -v
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+  debian:
+    # Debian 12 ships Wireshark 4.0, which no Ubuntu runner has.
+    runs-on: ubuntu-latest
+    container: debian:12
+    steps:
+      - name: Install Wireshark tools and a C toolchain
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y tshark curl ca-certificates build-essential git
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check that sharkd is available
+        run: sharkd -v
       - run: cargo test
 
   msrv:

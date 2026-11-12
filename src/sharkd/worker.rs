@@ -8,7 +8,7 @@
 //! without touching sharkd.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -191,6 +191,7 @@ impl Worker {
                     client,
                     loaded: None,
                     loads: 0,
+                    frame_neighbours: true,
                     deliver: Box::new(deliver),
                     pid: shared_pid,
                     stopping: shared_stopping,
@@ -244,6 +245,8 @@ struct Runner {
     loaded: Option<PathBuf>,
     /// Successful loads so far; see [`cache_key`].
     loads: u32,
+    /// Whether `frame` accepts `prev_frame` and `ref_frame`.
+    frame_neighbours: bool,
     deliver: Box<dyn Fn(Reply) + Send>,
     pid: Arc<AtomicU32>,
     stopping: Arc<AtomicBool>,
@@ -403,17 +406,34 @@ impl Runner {
                 prev,
                 reference,
             } => {
-                let mut params = json!({ "frame": num, "proto": true, "bytes": true });
-                if let Some(p) = prev {
-                    params["prev_frame"] = p.into();
+                let plain = json!({ "frame": num, "proto": true, "bytes": true });
+                let mut params = plain.clone();
+                if self.frame_neighbours {
+                    if let Some(p) = prev {
+                        params["prev_frame"] = p.into();
+                    }
+                    if let Some(r) = reference {
+                        params["ref_frame"] = r.into();
+                    }
                 }
-                if let Some(r) = reference {
-                    params["ref_frame"] = r.into();
+                let mut result = soft(self.client.call::<FrameDetail>("frame", params.clone()))?;
+                // Wireshark before 4.2 declares these two as booleans and so
+                // refuses a frame number. Without them the delta times in
+                // the details are relative to the capture's own neighbours,
+                // which is what the list shows unless a filter is applied.
+                if let Err(reason) = &result
+                    && params != plain
+                    && (reason.contains("prev_frame") || reason.contains("ref_frame"))
+                {
+                    self.frame_neighbours = false;
+                    result = soft(self.client.call::<FrameDetail>("frame", plain))?;
                 }
-                let result = soft(self.client.call::<FrameDetail>("frame", params))?;
                 Reply::Frame {
                     num,
-                    result: result.map(Box::new),
+                    result: result.map(|mut detail| {
+                        detail.fill_field_names();
+                        Box::new(detail)
+                    }),
                 }
             }
             Request::Check { seq, filter } => {
@@ -509,20 +529,17 @@ impl Runner {
     }
 
     #[allow(clippy::type_complexity)]
-    fn load(&mut self, path: &PathBuf) -> Result<Result<(Status, Option<String>), String>, Error> {
-        let loaded = match soft(
-            self.client
-                .call::<LoadResult>("load", json!({ "file": path })),
-        )? {
-            Ok(l) => l,
+    fn load(&mut self, path: &Path) -> Result<Result<(Status, Option<String>), String>, Error> {
+        let (loaded, status) = match soft(self.client.load::<LoadResult, Status>(path))? {
+            Ok(pair) => pair,
             Err(e) => return Ok(Err(e)),
         };
         // A non-zero `err` with frames loaded means the file ends mid-packet,
-        // which is normal for a capture that is still being written.
-        let warning = (loaded.err != 0).then_some(loaded.status);
-        let status = match soft(self.client.call::<Status>("status", Value::Null))? {
-            Ok(s) => s,
-            Err(e) => return Ok(Err(e)),
+        // which is normal for a capture that is still being written. Old
+        // versions say so by not answering the load at all.
+        let warning = match loaded {
+            Some(loaded) => (loaded.err != 0).then_some(loaded.status),
+            None => Some("Less data was read than was expected".to_string()),
         };
         Ok(Ok((status, warning)))
     }

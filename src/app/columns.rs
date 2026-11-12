@@ -163,6 +163,22 @@ impl Columns {
                 })
                 .collect();
         }
+        if cols.is_empty() {
+            // Wireshark before 4.2 does not say what the columns are. These
+            // are the ones every profile starts with.
+            cols = [
+                ("No.", "%m"),
+                ("Time", "%t"),
+                ("Source", "%s"),
+                ("Destination", "%d"),
+                ("Protocol", "%p"),
+                ("Length", "%L"),
+                ("Info", "%i"),
+            ]
+            .into_iter()
+            .map(|(title, format)| Column::describe(title, format))
+            .collect();
+        }
         if !cols.iter().any(|c| c.flexible)
             && let Some(last) = cols.last_mut()
         {

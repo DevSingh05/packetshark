@@ -217,6 +217,7 @@ pub struct App {
     pub source: PathBuf,
     pub title: String,
     pub info: Option<Info>,
+    wireshark: Option<(u32, u32)>,
     pub status: Option<Status>,
     pub load: LoadState,
     pub columns: Columns,
@@ -270,6 +271,7 @@ impl App {
         history: History,
     ) -> std::io::Result<App> {
         let tx = events.clone();
+        let wireshark = crate::sharkd::version(&launch.program);
         let worker = Worker::start(launch.clone(), move |reply| {
             let _ = tx.send(Event::Reply(reply));
         })?;
@@ -303,6 +305,7 @@ impl App {
             source: options.source.clone(),
             title: options.title,
             info: None,
+            wireshark,
             status: None,
             load: LoadState::Loading,
             columns: Columns::default(),
@@ -916,7 +919,31 @@ impl App {
         }));
     }
 
+    /// The Wireshark version of the sharkd in use, as (major, minor).
+    pub fn wireshark_version(&self) -> Option<(u32, u32)> {
+        self.wireshark
+    }
+
+    /// Whether `feature` is missing because Wireshark is older than `needs`,
+    /// telling the user if so. An unknown version is given the benefit of
+    /// the doubt.
+    pub(super) fn lacks(&mut self, feature: &str, needs: (u32, u32)) -> bool {
+        match self.wireshark_version() {
+            Some(have) if have < needs => {
+                self.error(format!(
+                    "{feature} need Wireshark {}.{} or newer; this is {}.{}.",
+                    needs.0, needs.1, have.0, have.1
+                ));
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn open_stats(&mut self, kind: stats::Kind, wanted: Option<&str>) {
+        if kind == stats::Kind::Hierarchy && self.lacks("Protocol hierarchy statistics", (4, 2)) {
+            return;
+        }
         let mut tabs: Vec<String> = match kind {
             stats::Kind::Conversations | stats::Kind::Endpoints => {
                 let prefix = if kind == stats::Kind::Conversations {

@@ -143,6 +143,31 @@ fn followable<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<(String, String)>,
         .collect())
 }
 
+impl FrameDetail {
+    /// Wireshark before 4.2 does not name a node's field, only gives the
+    /// filter that matches it (`tcp.port == 80`). The name is the filter's
+    /// first word.
+    pub fn fill_field_names(&mut self) {
+        fn fill(nodes: &mut [Node]) {
+            for node in nodes {
+                if node.field.is_none() {
+                    node.field = node
+                        .filter
+                        .as_deref()
+                        .and_then(|f| f.split_whitespace().next())
+                        .filter(|name| {
+                            name.chars()
+                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+                        })
+                        .map(str::to_string);
+                }
+                fill(&mut node.children);
+            }
+        }
+        fill(&mut self.tree);
+    }
+}
+
 /// Reply to `follow`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Follow {
@@ -599,6 +624,26 @@ mod tests {
         );
         let detail: FrameDetail = serde_json::from_str(r#"{"tree":[],"fol":null}"#).unwrap();
         assert!(detail.fol.is_empty());
+    }
+
+    #[test]
+    fn field_names_are_taken_from_filters_when_missing() {
+        let mut detail: FrameDetail = serde_json::from_str(
+            r#"{"tree":[{"l":"TCP","f":"tcp","n":[
+                {"l":"Port","f":"tcp.port == 80"},
+                {"l":"Named","f":"tcp.len == 0","fn":"tcp.len"},
+                {"l":"Odd","f":"(a) && b"},
+                {"l":"Text"}]}]}"#,
+        )
+        .unwrap();
+        detail.fill_field_names();
+        let names: Vec<Option<&str>> = detail.tree[0]
+            .children
+            .iter()
+            .map(|n| n.field.as_deref())
+            .collect();
+        assert_eq!(detail.tree[0].field.as_deref(), Some("tcp"));
+        assert_eq!(names, [Some("tcp.port"), Some("tcp.len"), None, None]);
     }
 
     #[derive(Debug, Deserialize, PartialEq)]
