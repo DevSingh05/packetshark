@@ -154,40 +154,9 @@ pub fn status(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)>
         return Some((x + cursor as u16, area.y));
     }
 
-    // Right side: what the user can press.
-    let hint = if app.overlay.is_some() {
-        "Esc close "
-    } else {
-        "? help "
-    };
-    let hint_width = width(hint) as u16;
-    put_right(buf, area.x, area.y, area.width, hint, app.theme.status_key);
-    let room = area.width.saturating_sub(hint_width + 1);
-
-    // Left side: spinner, file, counts.
-    let mut x = area.x + 1;
-    let busy = app.busy() || app.load == LoadState::Loading;
-    let lead = if busy {
-        SPINNER[(app.ticks as usize) % SPINNER.len()]
-    } else {
-        " "
-    };
-    put(buf, x, area.y, 1, lead, app.theme.status_key);
-    x += 2;
-
-    let name = truncate(&app.title, (room / 3).max(8) as usize);
-    put(
-        buf,
-        x,
-        area.y,
-        room.saturating_sub(x - area.x),
-        &name,
-        base.add_modifier(Modifier::BOLD),
-    );
-    x += width(&name) as u16 + 1;
-
-    let left = room.saturating_sub(x - area.x);
-    // A filter error while typing is the most useful thing to show.
+    // What there is to say: a filter error while typing is the most useful
+    // thing to show, then any message, then the capture's details.
+    let name = truncate(&app.title, (area.width / 3).max(8) as usize);
     let (text, style) =
         if let (Focus::Filter, Validity::Invalid(reason)) = (app.focus, &app.filter.validity) {
             (reason.clone(), base.patch(app.theme.error))
@@ -201,6 +170,54 @@ pub fn status(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)>
         } else {
             (details(app), base)
         };
+    // Spinner, name, separator and text, with their spacing.
+    let wanted = (3 + width(&name) + 3 + width(&text) + 2) as u16;
+
+    // Right side: what the user can press here. The last hint always fits;
+    // the ones before it are shown only in room the left side does not need.
+    let hints = hints(app);
+    let budget = area.width.saturating_sub(wanted);
+    let hint_width = |hints: &[(&str, &str)]| -> u16 {
+        hints
+            .iter()
+            .map(|(key, label)| (width(key) + width(label) + 3) as u16)
+            .sum()
+    };
+    let mut first = 0;
+    while first + 1 < hints.len() && hint_width(&hints[first..]) > budget {
+        first += 1;
+    }
+    let hints = &hints[first..];
+    let hint_width = hint_width(hints);
+    let mut hx = area.x + area.width.saturating_sub(hint_width);
+    for (key, label) in hints {
+        put(buf, hx, area.y, area.width, key, app.theme.status_key);
+        hx += width(key) as u16 + 1;
+        put(buf, hx, area.y, area.width, label, base);
+        hx += width(label) as u16 + 2;
+    }
+    let room = area.width.saturating_sub(hint_width + 1);
+
+    // Left side: spinner, file, text.
+    let mut x = area.x + 1;
+    let busy = app.busy() || app.load == LoadState::Loading;
+    let lead = if busy {
+        SPINNER[(app.ticks as usize) % SPINNER.len()]
+    } else {
+        " "
+    };
+    put(buf, x, area.y, 1, lead, app.theme.status_key);
+    x += 2;
+    put(
+        buf,
+        x,
+        area.y,
+        room.saturating_sub(x - area.x),
+        &name,
+        base.add_modifier(Modifier::BOLD),
+    );
+    x += width(&name) as u16 + 1;
+    let left = room.saturating_sub(x - area.x);
     put(
         buf,
         x,
@@ -210,6 +227,31 @@ pub fn status(app: &mut App, buf: &mut Buffer, area: Rect) -> Option<(u16, u16)>
         style,
     );
     None
+}
+
+/// The keys worth knowing where the user is now, least important first.
+fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
+    match app.overlay {
+        // Windows list their own keys along their bottom edge.
+        Some(_) => vec![("Esc", "close")],
+        None => match app.focus {
+            Focus::Filter => vec![("Tab", "complete"), ("Esc", "cancel"), ("Enter", "apply")],
+            Focus::List => vec![
+                ("S", "stats"),
+                ("F", "follow"),
+                ("s", "find"),
+                ("/", "filter"),
+                ("?", "help"),
+            ],
+            Focus::Tree => vec![
+                ("y", "copy"),
+                ("a", "filter on field"),
+                ("/", "filter"),
+                ("?", "help"),
+            ],
+            Focus::Hex => vec![("y", "copy"), ("/", "filter"), ("?", "help")],
+        },
+    }
 }
 
 /// The default status text: size, selection and capture state.

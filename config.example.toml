@@ -29,3 +29,7 @@ mouse = true
 
 # Start with the details tree fully expanded.
 expand_all = false
+
+# Draw with ASCII characters only. This happens by itself when the locale is
+# not UTF-8; set it for a terminal that claims UTF-8 and cannot show it.
+ascii = false

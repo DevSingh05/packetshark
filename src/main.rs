@@ -81,6 +81,11 @@ struct Cli {
     /// Do not capture the mouse (lets the terminal select text)
     #[arg(long)]
     no_mouse: bool,
+
+    /// Draw with ASCII characters only. This is automatic when the locale is
+    /// not UTF-8
+    #[arg(long)]
+    ascii: bool,
 }
 
 fn main() -> ExitCode {
@@ -133,8 +138,8 @@ fn run(cli: Cli) -> Result<(), String> {
 
     let mut theme = Theme::detect();
     match config.ui.background.as_str() {
-        "dark" => theme.dark = true,
-        "light" => theme.dark = false,
+        "dark" => theme.set_dark(true),
+        "light" => theme.set_dark(false),
         "auto" | "" => {}
         other => {
             return Err(format!(
@@ -155,6 +160,9 @@ fn run(cli: Cli) -> Result<(), String> {
     }
     if cli.no_mouse {
         config.ui.mouse = false;
+    }
+    if cli.ascii || config.ui.ascii {
+        theme.ascii = true;
     }
 
     // Work out where the packets come from.

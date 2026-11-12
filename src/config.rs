@@ -28,6 +28,8 @@ pub struct Ui {
     pub mouse: bool,
     /// Expand the whole dissection tree by default.
     pub expand_all: bool,
+    /// Draw with ASCII characters only.
+    pub ascii: bool,
 }
 
 impl Default for Ui {
@@ -38,6 +40,7 @@ impl Default for Ui {
             background: "auto".into(),
             mouse: true,
             expand_all: false,
+            ascii: false,
         }
     }
 }

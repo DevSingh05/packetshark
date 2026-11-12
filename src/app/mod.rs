@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyEvent, KeyEventKind, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
 
 use crate::capture::Capture;
@@ -205,6 +205,8 @@ pub struct App {
     /// Keys typed while a filter was waiting to be validated; replayed once
     /// it is applied, so type-ahead lands where the user meant it.
     held_keys: Vec<KeyEvent>,
+    /// Keys typed before the capture had opened; see `holds_for_opening`.
+    typed_ahead: std::collections::VecDeque<KeyEvent>,
     history: History,
     command_history: Vec<String>,
 
@@ -289,6 +291,7 @@ impl App {
             launch,
             inflight: 0,
             held_keys: Vec::new(),
+            typed_ahead: std::collections::VecDeque::new(),
             history,
             command_history: Vec::new(),
             tree: TreeState::with_expand_all(config.ui.expand_all),
@@ -406,7 +409,10 @@ impl App {
     pub fn handle(&mut self, event: Event) {
         match event {
             Event::Key(key) => {
-                if key.kind != KeyEventKind::Release {
+                if key.kind == KeyEventKind::Release {
+                } else if self.holds_for_opening(&key) {
+                    self.typed_ahead.push_back(key);
+                } else {
                     self.on_key(key);
                 }
             }
@@ -421,6 +427,54 @@ impl App {
         }
         self.request_pages();
         self.sync_detail();
+        self.replay_typed_ahead();
+    }
+
+    /// Whether a capture file is being opened for the first time, with
+    /// nothing on screen yet for a key to act on.
+    fn opening(&self) -> bool {
+        self.load == LoadState::Loading
+            && self.status.is_none()
+            && self.tail.is_none()
+            && self.capture.is_none()
+    }
+
+    /// Keys typed while a capture is still opening are kept and played back
+    /// once there are packets to act on, instead of being lost: `packetshark
+    /// big.pcap` followed at once by `G` should end on the last packet.
+    fn holds_for_opening(&self, key: &KeyEvent) -> bool {
+        if !self.opening() && self.typed_ahead.is_empty() {
+            return false;
+        }
+        if self.typed_ahead.len() >= 256 {
+            return false;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('c') {
+            return false;
+        }
+        // `q` quits at once, unless it is part of something being typed.
+        let typing_text = self
+            .typed_ahead
+            .iter()
+            .any(|k| matches!(k.code, KeyCode::Char('/' | ':' | 's')));
+        !(key.code == KeyCode::Char('q') && !typing_text)
+    }
+
+    /// Play back held keys, each one only after the previous has settled, so
+    /// they see the same screen they would have if typed slowly.
+    fn replay_typed_ahead(&mut self) {
+        if matches!(self.load, LoadState::Failed(_)) {
+            self.typed_ahead.clear();
+        }
+        while !self.opening() && !self.busy() {
+            let Some(key) = self.typed_ahead.pop_front() else {
+                break;
+            };
+            self.on_key(key);
+            self.request_pages();
+            self.sync_detail();
+        }
     }
 
     fn on_tick(&mut self) {

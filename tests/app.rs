@@ -1656,3 +1656,76 @@ fn sharkd_is_restarted_if_it_dies() {
     assert!(h.line(1).contains("2 of 21 packets"), "{}", h.line(1));
     assert_ne!(h.app.sharkd_pid(), before, "a new sharkd process is in use");
 }
+
+#[test]
+fn keys_typed_before_the_capture_opens_are_not_lost() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.pcap");
+    pcap::web().write(&path);
+    let Some(mut h) = Harness::start(dir, path, 100, 30, Options::default()) else {
+        return;
+    };
+    // Typed at once, before sharkd has answered anything: filter, go to the
+    // last match, open its details and expand the DNS layer.
+    h.keys("/dns\nG\njjjjl");
+    assert!(h.line(1).contains("2 of"), "{}", h.line(1));
+    assert_eq!(h.app.list.selected_num(), Some(2));
+    assert_eq!(h.app.focus, Focus::Tree);
+    h.assert_screen_contains("Transaction ID");
+}
+
+#[test]
+fn q_quits_while_the_capture_is_still_opening() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.pcap");
+    pcap::web().write(&path);
+    let Some(mut h) = Harness::start(dir, path, 100, 30, Options::default()) else {
+        return;
+    };
+    h.app.handle(Event::Key(crossterm::event::KeyEvent::new(
+        KeyCode::Char('q'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    assert!(h.app.quit);
+}
+
+#[test]
+fn a_window_hides_the_colours_of_the_rows_beneath_it() {
+    let Some(mut h) = Harness::open(&pcap::web()) else {
+        return;
+    };
+    // The packet rows are coloured by Wireshark's rules.
+    let coloured = (2..12).any(|y| h.bg_at(10, y) != Some(Color::Reset));
+    assert!(coloured, "expected coloured packet rows:\n{}", h.screen());
+    h.keys("jj");
+    h.key(KeyCode::Char('F'));
+    h.key(KeyCode::Char('t'));
+    h.assert_screen_contains("Follow TCP stream");
+    for y in 1..28 {
+        for x in 0..100 {
+            assert_eq!(
+                h.bg_at(x, y),
+                Some(Color::Reset),
+                "background showing through at {x},{y}:\n{}",
+                h.screen()
+            );
+        }
+    }
+}
+
+#[test]
+fn ascii_mode_draws_nothing_outside_ascii() {
+    let Some(mut h) = Harness::open(&pcap::web()) else {
+        return;
+    };
+    h.app.theme.ascii = true;
+    h.key(KeyCode::Enter);
+    h.keys("jjl");
+    h.key(KeyCode::Char('S'));
+    let screen = h.screen();
+    assert!(screen.is_ascii(), "non-ASCII on screen:\n{screen}");
+    // The shapes are still there in their plain form.
+    assert!(screen.contains("- Packets -"), "{screen}");
+    assert!(screen.contains("+- Statistics -"), "{screen}");
+    assert!(screen.contains("> Frame 1"), "{screen}");
+}

@@ -11,7 +11,7 @@ mod tree;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 
 use crate::app::{App, Areas, Focus, LayoutKind, Overlay};
 use crate::util::{truncate, width};
@@ -79,8 +79,28 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
             cursor = Some(c);
         }
     }
+    if app.theme.ascii {
+        asciify(frame.buffer_mut());
+    }
     if let Some((x, y)) = cursor {
         frame.set_cursor_position((x, y));
+    }
+}
+
+/// Replace everything outside ASCII, for terminals that cannot show it.
+fn asciify(buf: &mut Buffer) {
+    for cell in &mut buf.content {
+        let symbol = cell.symbol();
+        if symbol.is_empty() {
+            // The second half of a wide character that is now one cell wide.
+            cell.set_char(' ');
+            continue;
+        }
+        if symbol.is_ascii() {
+            continue;
+        }
+        let replacement = symbol.chars().next().map_or(' ', crate::theme::ascii_for);
+        cell.set_char(replacement);
     }
 }
 
@@ -201,12 +221,16 @@ pub(crate) fn put_right(buf: &mut Buffer, x: u16, y: u16, max: u16, text: &str, 
     put(buf, x + max.saturating_sub(w), y, w, &text, style);
 }
 
-/// Fill a rectangle with a style (and spaces).
+/// Clear a rectangle to spaces in `style`. Whatever was drawn there before
+/// is gone, including its colours and attributes: a window drawn over the
+/// panes must not inherit the background of the rows beneath it.
 pub(crate) fn fill(buf: &mut Buffer, area: Rect, style: Style) {
     let area = area.intersection(buf.area);
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
-            buf[(x, y)].set_char(' ').set_style(style);
+            let cell = &mut buf[(x, y)];
+            cell.reset();
+            cell.set_style(style);
         }
     }
 }
@@ -220,30 +244,36 @@ pub(crate) fn title_bar(
     title: &str,
     right: &str,
 ) -> Rect {
-    let style = if focused {
-        app.theme.title_focused
+    let (style, rule) = if focused {
+        (app.theme.title_focused, app.theme.rule_focused)
     } else {
-        app.theme.title
+        (app.theme.title, app.theme.rule)
     };
+    // A rule across the row, with the title and the detail set into it.
     let bar = Rect { height: 1, ..area };
-    fill(buf, bar, style);
+    fill(buf, bar, app.theme.text);
+    for x in area.x..area.x + area.width {
+        put(buf, x, area.y, 1, "─", rule);
+    }
+    let title_width = (width(title) as u16 + 2).min(area.width.saturating_sub(1));
     put(
         buf,
         area.x + 1,
         area.y,
-        area.width.saturating_sub(2),
-        title,
+        title_width,
+        &format!(" {title} "),
         style,
     );
-    let used = width(title) as u16 + 2;
-    if area.width > used + 2 {
-        put_right(
+    let used = title_width + 1;
+    let right_width = width(right) as u16 + 2;
+    if !right.is_empty() && area.width > used + right_width + 2 {
+        put(
             buf,
-            area.x + used,
+            area.x + area.width - right_width - 1,
             area.y,
-            area.width - used - 1,
-            right,
-            style,
+            right_width,
+            &format!(" {right} "),
+            style.remove_modifier(Modifier::BOLD),
         );
     }
     Rect {
