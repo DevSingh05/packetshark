@@ -926,8 +926,14 @@ impl App {
                     KeyCode::Char('o') => view.cycle_sort(),
                     KeyCode::Char('r') => view.reverse_sort(),
                     KeyCode::Char('f') => {
-                        view.limit_to_filter = !view.limit_to_filter;
-                        self.request_stats();
+                        // sharkd takes a filter for statistics from 4.2.
+                        let too_old = self.wireshark.is_some_and(|v| v < (4, 2));
+                        if too_old {
+                            self.lacks("Statistics for the filtered packets only", (4, 2));
+                        } else {
+                            view.limit_to_filter = !view.limit_to_filter;
+                            self.request_stats();
+                        }
                     }
                     KeyCode::Enter => self.activate_stats_row(),
                     KeyCode::Char('a') => self.stats_filter_menu(false),

@@ -48,6 +48,11 @@ Notable changes to packetshark. The format follows
 - The columns you arrange are remembered between runs. `:column reset` goes
   back to the Wireshark profile's.
 
+### Fixed
+
+- On Wireshark older than 4.2, `f` in a statistics table showed sharkd's
+  raw error. It now says that filtered statistics need 4.2.
+
 ## 0.1.1 - 2026-11-12
 
 ### Changed

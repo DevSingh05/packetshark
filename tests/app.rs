@@ -1053,6 +1053,18 @@ fn statistics_can_be_limited_to_the_display_filter() {
     h.assert_screen_contains("all packets");
     h.assert_screen_contains("40000");
     h.key(KeyCode::Char('f'));
+    if h.app.wireshark_version() < Some((4, 2)) {
+        // sharkd takes no filter for statistics before 4.2. The table stays
+        // as it was, and the app says why.
+        assert!(
+            h.message().contains("need Wireshark 4.2"),
+            "{}",
+            h.message()
+        );
+        h.assert_screen_contains("all packets");
+        h.assert_screen_contains("40000");
+        return;
+    }
     h.assert_screen_contains("only packets matching: tcp.port == 40001");
     h.assert_screen_lacks("40000");
     h.assert_screen_contains("40001");
@@ -2775,7 +2787,6 @@ fn a_conversation_can_be_filtered_by_direction_or_combined() {
     h.keys("/http\n");
     let http: u32 = h.app.list.total.unwrap();
     h.keys(":conv tcp\n");
-    h.keys("f"); // count all packets again, not only those the filter shows
     h.keys("ax");
     assert!(
         h.app.filter.applied.starts_with("(http) && !("),
