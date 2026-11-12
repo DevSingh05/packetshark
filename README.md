@@ -40,8 +40,25 @@ rule and preference Wireshark has works here, with the same results.
 
 ## Install
 
-packetshark needs Wireshark's command-line tools. `sharkd` is required;
-`dumpcap` is used for live capture and `tshark` for saving filtered packets.
+With Homebrew, on macOS or Linux. This installs Wireshark's command-line
+tools as well:
+
+```sh
+brew install DevSingh05/tap/packetshark
+```
+
+Or download a binary from the
+[releases page](https://github.com/DevSingh05/packetshark/releases). The Linux
+ones are static and run on any distribution. Or build it with Rust 1.88 or
+newer:
+
+```sh
+cargo install --git https://github.com/DevSingh05/packetshark
+```
+
+However you install it, packetshark needs Wireshark's command-line tools.
+`sharkd` is required; `dumpcap` is used for live capture and `tshark` for
+saving filtered packets.
 
 | System           | Command                          |
 | ---------------- | -------------------------------- |
@@ -49,12 +66,6 @@ packetshark needs Wireshark's command-line tools. `sharkd` is required;
 | Debian, Ubuntu   | `sudo apt install tshark`        |
 | Fedora           | `sudo dnf install wireshark-cli` |
 | Arch             | `sudo pacman -S wireshark-cli`   |
-
-Then build packetshark with Rust 1.88 or newer:
-
-```sh
-cargo install --path .
-```
 
 If `sharkd` is somewhere unusual, point to it with `--sharkd PATH`, the
 `PACKETSHARK_SHARKD` environment variable, or `sharkd = "..."` in the config
