@@ -2948,3 +2948,115 @@ fn copying_can_go_through_a_command_of_the_users() {
         h.settle();
     }
 }
+
+#[test]
+fn packets_over_time_and_the_flow_sequence() {
+    // Thirty quiet packets over three seconds, then a burst.
+    let mut capture = pcap::many(30);
+    for _ in 0..4 {
+        capture.http(40000, "example.com", "/burst", "x");
+    }
+    let Some(mut h) = Harness::open_with(&capture, 120, 30, Options::default()) else {
+        return;
+    };
+    let total = h.app.frames();
+
+    h.keys(":graph\n");
+    h.assert_screen_contains("Packets over time");
+    h.assert_screen_contains("all packets");
+    let bars = match &h.app.overlay {
+        Some(Overlay::Graph(graph)) => graph.bars(),
+        _ => panic!("no graph:\n{}", h.screen()),
+    };
+    assert_eq!(
+        bars.iter().map(|(all, _)| *all).sum::<u64>(),
+        u64::from(total),
+        "every packet is counted once"
+    );
+    assert!(h.screen().contains('█'), "bars are drawn:\n{}", h.screen());
+    // Bytes instead of packets, and back.
+    h.keys("b");
+    h.assert_screen_contains("Bytes over time");
+    h.keys("b");
+    // Finer and coarser buckets keep the total.
+    h.keys("+");
+    h.keys("-");
+    h.keys("---");
+    let coarser = match &h.app.overlay {
+        Some(Overlay::Graph(graph)) => graph.bars(),
+        _ => panic!("no graph:\n{}", h.screen()),
+    };
+    assert_eq!(
+        coarser.iter().map(|(all, _)| *all).sum::<u64>(),
+        u64::from(total)
+    );
+    let interval = match &h.app.overlay {
+        Some(Overlay::Graph(graph)) => graph.interval_ms,
+        _ => 0,
+    };
+    assert!(
+        coarser.len() < bars.len(),
+        "coarser buckets, fewer bars: {} then {} at {interval} ms",
+        bars.len(),
+        coarser.len()
+    );
+
+    // Enter filters the list to the bar under the cursor.
+    h.keys("G");
+    h.key(KeyCode::Enter);
+    assert!(h.app.overlay.is_none());
+    assert!(
+        h.app.filter.applied.starts_with("frame.time_relative >= "),
+        "{}",
+        h.app.filter.applied
+    );
+    let in_last_bar = h.app.list.total.unwrap();
+    assert!(
+        in_last_bar > 0 && in_last_bar < total,
+        "{in_last_bar} of {total}"
+    );
+
+    // Under a filter the graph shows both: everything, and what it shows.
+    h.keys("/http\n");
+    h.keys(":graph\n");
+    h.assert_screen_contains("those matching: http");
+    let bars = match &h.app.overlay {
+        Some(Overlay::Graph(graph)) => graph.bars(),
+        _ => panic!("no graph:\n{}", h.screen()),
+    };
+    let shown: u64 = bars.iter().map(|(_, shown)| *shown).sum();
+    assert_eq!(shown, u64::from(h.app.list.total.unwrap()));
+    assert!(shown < u64::from(total));
+    h.key(KeyCode::Enter);
+    assert!(
+        h.app
+            .filter
+            .applied
+            .starts_with("(http) && frame.time_relative"),
+        "{}",
+        h.app.filter.applied
+    );
+
+    // The flow sequence: who sent what to whom, with the sides kept.
+    h.keys("x:flow tcp\n");
+    h.assert_screen_contains("Flow sequence");
+    let (_, there) = h.find_line("──▶").unwrap();
+    let (_, back) = h.find_line("◀──").unwrap();
+    let side = |line: &str| line.find("10.0.0.2:40000").unwrap();
+    assert_eq!(
+        side(&there),
+        side(&back),
+        "each end keeps its column:\n{there}\n{back}"
+    );
+    h.key(KeyCode::Enter);
+    assert!(
+        h.app.filter.applied.contains("ip.addr == 10.0.0.2"),
+        "{}",
+        h.app.filter.applied
+    );
+    // From the statistics menu too.
+    h.keys("xS");
+    h.assert_screen_contains("Flow sequence");
+    h.keys("f");
+    h.assert_screen_contains("What");
+}

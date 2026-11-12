@@ -16,6 +16,8 @@ pub enum Kind {
     Objects,
     /// One of sharkd's many per-protocol statistics trees (`stat:http`, ...).
     Tree,
+    /// Who sent what to whom, in order: a call flow.
+    Flow,
 }
 
 impl Kind {
@@ -27,12 +29,16 @@ impl Kind {
             Kind::Expert => "Expert information",
             Kind::Objects => "Export objects",
             Kind::Tree => "Statistics",
+            Kind::Flow => "Flow sequence",
         }
     }
 
     /// Whether the view has one tab per protocol.
     pub fn has_tabs(self) -> bool {
-        matches!(self, Kind::Conversations | Kind::Endpoints | Kind::Objects)
+        matches!(
+            self,
+            Kind::Conversations | Kind::Endpoints | Kind::Objects | Kind::Flow
+        )
     }
 
     /// What Enter does on a row, for the footer hint.
@@ -43,6 +49,7 @@ impl Kind {
             Kind::Expert => "show packets",
             Kind::Objects => "save",
             Kind::Tree => "",
+            Kind::Flow => "show the two ends' packets",
         }
     }
 }
@@ -216,6 +223,8 @@ impl StatsView {
                 .as_ref()
                 .map(|(tap, _)| tap.clone())
                 .unwrap_or_default(),
+            Kind::Flow if proto == "All" => "seqa:any".to_string(),
+            Kind::Flow => format!("seqa:{}", proto.to_ascii_lowercase()),
         }
     }
 
@@ -498,6 +507,71 @@ impl StatsView {
                     });
                 }
             }
+            Tap::Flows { nodes, flows } => {
+                self.truncated_from = flows.truncated_from();
+                self.columns = vec![num("Time"), col("From"), col(""), col("To"), col("What")];
+                let end = |node: usize, port: Option<u32>| {
+                    let name = nodes.get(node).map_or("?", String::as_str);
+                    match port {
+                        // An IPv6 address needs brackets to tell its colons
+                        // from the port's.
+                        Some(port) if name.contains(':') => format!("[{name}]:{port}"),
+                        Some(port) => format!("{name}:{port}"),
+                        None => name.to_string(),
+                    }
+                };
+                for flow in flows.items {
+                    let (from, to) = flow.ends;
+                    let (from_port, to_port) = match flow.ports {
+                        Some((a, b)) if a != 0 || b != 0 => (Some(a), Some(b)),
+                        _ => (None, None),
+                    };
+                    // Each pair keeps its sides, as in a ladder diagram: the
+                    // arrow turns round, not the columns.
+                    let turned = from > to;
+                    let (left, right, arrow) = if turned {
+                        (end(to, to_port), end(from, from_port), "◀──")
+                    } else {
+                        (end(from, from_port), end(to, to_port), "──▶")
+                    };
+                    let filter = match (nodes.get(from), nodes.get(to)) {
+                        (Some(a), Some(b)) => {
+                            let field = if a.contains(':') {
+                                "ipv6.addr"
+                            } else {
+                                "ip.addr"
+                            };
+                            // Names that are not addresses (a resolved host)
+                            // cannot be filtered on this way.
+                            let address = |s: &str| {
+                                s.chars()
+                                    .all(|c| c.is_ascii_hexdigit() || matches!(c, '.' | ':'))
+                            };
+                            (address(a) && address(b))
+                                .then(|| format!("{field} == {a} && {field} == {b}"))
+                        }
+                        _ => None,
+                    };
+                    self.rows.push(Row {
+                        cells: vec![
+                            flow.time.clone(),
+                            left,
+                            arrow.to_string(),
+                            right,
+                            flow.comment,
+                        ],
+                        keys: vec![
+                            flow.time.parse::<f64>().map_or(Key::Text, Key::Num),
+                            Key::Text,
+                            Key::Text,
+                            Key::Text,
+                            Key::Text,
+                        ],
+                        filter,
+                        ..Default::default()
+                    });
+                }
+            }
             Tap::Objects { objects, .. } => {
                 self.columns = vec![
                     num("Packet"),
@@ -574,7 +648,8 @@ impl StatsView {
     /// Tree-shaped tables keep sharkd's order; sorting would scramble parents
     /// and children.
     pub fn sortable(&self) -> bool {
-        !matches!(self.kind, Kind::Hierarchy) && !self.rows.iter().any(|r| r.depth > 0)
+        // A tree's order is its shape, and a flow's is its meaning.
+        !matches!(self.kind, Kind::Hierarchy | Kind::Flow) && !self.rows.iter().any(|r| r.depth > 0)
     }
 
     pub fn cycle_sort(&mut self) {

@@ -207,6 +207,12 @@ pub struct Intervals {
     pub frames: u32,
     #[serde(default)]
     pub bytes: u64,
+    /// `(index, packets, bytes)` for each interval that has packets.
+    #[serde(default)]
+    pub intervals: Vec<(u64, u64, u64)>,
+    /// Index of the last interval.
+    #[serde(default)]
+    pub last: u64,
 }
 
 /// One completion candidate from `complete`.
@@ -239,6 +245,9 @@ pub struct Info {
     pub stats: Vec<NamedTap>,
     #[serde(default)]
     pub eo: Vec<NamedTap>,
+    /// Flow-sequence taps (`seqa:tcp`, ...).
+    #[serde(default)]
+    pub seqa: Vec<NamedTap>,
     #[serde(default)]
     pub follow: Vec<NamedTap>,
 }
@@ -409,8 +418,84 @@ pub enum Tap {
         name: String,
         stats: Vec<StatNode>,
     },
+    /// Who sent what to whom, in order: `flows` name their two ends by
+    /// position in `nodes`.
+    Flows {
+        nodes: Vec<String>,
+        flows: Head<Flow>,
+    },
     /// A kind of tap this version does not understand.
     Other,
+}
+
+/// One arrow of a flow sequence.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Flow {
+    /// Seconds since the capture began, as text.
+    #[serde(rename = "t", default)]
+    pub time: String,
+    /// The sending and the receiving node.
+    #[serde(rename = "n")]
+    pub ends: (usize, usize),
+    /// Their ports, for protocols that have them.
+    #[serde(rename = "pn", default)]
+    pub ports: Option<(u32, u32)>,
+    #[serde(rename = "c", default)]
+    pub comment: String,
+}
+
+/// The first [`MAX_ROWS`] items of a list, with a count of all of them. For
+/// lists whose order is their meaning, where the largest items are no
+/// substitute for the first ones.
+#[derive(Debug, Clone)]
+pub struct Head<T> {
+    pub items: Vec<T>,
+    pub total: usize,
+}
+
+impl<T> Default for Head<T> {
+    fn default() -> Self {
+        Head {
+            items: Vec::new(),
+            total: 0,
+        }
+    }
+}
+
+impl<T> Head<T> {
+    /// How many there were, if more than were kept.
+    pub fn truncated_from(&self) -> Option<usize> {
+        (self.total > self.items.len()).then_some(self.total)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Head<T> {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct HeadVisitor<T>(PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for HeadVisitor<T> {
+            type Value = Head<T>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a list")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Head<T>, A::Error> {
+                let mut head = Head::default();
+                while head.items.len() < MAX_ROWS {
+                    let Some(item) = seq.next_element::<T>()? else {
+                        head.total = head.items.len();
+                        return Ok(head);
+                    };
+                    head.items.push(item);
+                }
+                // Past the limit: count the rest without keeping it.
+                head.total = head.items.len();
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    head.total += 1;
+                }
+                Ok(head)
+            }
+        }
+        de.deserialize_seq(HeadVisitor(PhantomData))
+    }
 }
 
 /// The tap object as it is on the wire. Parsing into this flat struct (rather
@@ -436,6 +521,10 @@ struct RawTap {
     objects: Vec<ExportObject>,
     #[serde(default)]
     stats: Vec<StatNode>,
+    #[serde(default)]
+    nodes: Vec<String>,
+    #[serde(default)]
+    flows: Head<Flow>,
 }
 
 impl From<RawTap> for Tap {
@@ -460,6 +549,10 @@ impl From<RawTap> for Tap {
             "stats" => Tap::Stats {
                 name: raw.name,
                 stats: raw.stats,
+            },
+            "flow" => Tap::Flows {
+                nodes: raw.nodes,
+                flows: raw.flows,
             },
             _ => Tap::Other,
         }
@@ -612,6 +705,36 @@ pub struct Download {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flow_sequence_keeps_its_first_rows_and_counts_the_rest() {
+        let tap: Tap = serde_json::from_str(
+            r#"{"tap":"seqa:tcp","type":"flow","nodes":["10.0.0.1","10.0.0.2"],
+                "flows":[{"t":"0.5","n":[0,1],"pn":[40000,80],"c":"Seq = 0"},
+                         {"t":"0.6","n":[1,0],"c":"reply"}]}"#,
+        )
+        .unwrap();
+        let Tap::Flows { nodes, flows } = tap else {
+            panic!("not a flow tap");
+        };
+        assert_eq!(nodes, ["10.0.0.1", "10.0.0.2"]);
+        assert_eq!(flows.items.len(), 2);
+        assert_eq!(flows.items[0].ends, (0, 1));
+        assert_eq!(flows.items[0].ports, Some((40000, 80)));
+        assert_eq!(flows.items[1].ports, None);
+        assert_eq!(flows.truncated_from(), None);
+
+        // More than the limit: the first ones are kept, in order.
+        let many: String = (0..MAX_ROWS + 25)
+            .map(|i| format!(r#"{{"t":"{i}","n":[0,1],"c":""}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let head: Head<Flow> = serde_json::from_str(&format!("[{many}]")).unwrap();
+        assert_eq!(head.items.len(), MAX_ROWS);
+        assert_eq!(head.items[0].time, "0");
+        assert_eq!(head.items[MAX_ROWS - 1].time, (MAX_ROWS - 1).to_string());
+        assert_eq!(head.truncated_from(), Some(MAX_ROWS + 25));
+    }
 
     #[test]
     fn a_frame_that_only_quotes_a_protocol_has_nothing_to_follow() {

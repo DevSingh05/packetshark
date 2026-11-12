@@ -98,6 +98,13 @@ pub enum Request {
         /// instead of the details.
         summary: Option<Vec<String>>,
     },
+    /// Count packets and bytes in each `interval_ms` of the capture: all of
+    /// them, and those `filter` shows if it is not empty.
+    Intervals {
+        id: u64,
+        interval_ms: u64,
+        filter: String,
+    },
     /// Validate a display filter.
     Check { seq: u64, filter: String },
     /// Ask whether `field` is a field Wireshark knows, for a new column.
@@ -150,6 +157,11 @@ pub enum Reply {
         generation: u64,
         seek: Seek,
         result: Result<DetailsStep, String>,
+    },
+    Intervals {
+        id: u64,
+        /// Every packet, then those the filter shows.
+        result: Result<(Intervals, Option<Intervals>), String>,
     },
     Check {
         seq: u64,
@@ -482,6 +494,29 @@ impl Runner {
                     seek,
                     result,
                 }
+            }
+            Request::Intervals {
+                id,
+                interval_ms,
+                filter,
+            } => {
+                let all = soft(
+                    self.client
+                        .call::<Intervals>("intervals", json!({ "interval": interval_ms })),
+                )?;
+                let result = match all {
+                    Err(e) => Err(e),
+                    Ok(all) if filter.is_empty() => Ok((all, None)),
+                    Ok(all) => soft(self.client.call::<Intervals>(
+                        "intervals",
+                        json!({
+                            "interval": interval_ms,
+                            "filter": cache_key(&filter, self.loads),
+                        }),
+                    ))?
+                    .map(|shown| (all, Some(shown))),
+                };
+                Reply::Intervals { id, result }
             }
             Request::Check { seq, filter } => {
                 let result = if filter.trim().is_empty() {
@@ -840,6 +875,10 @@ fn failure(request: Request, reason: String) -> Reply {
         } => Reply::DetailsSearched {
             generation,
             seek,
+            result: Err(reason),
+        },
+        Request::Intervals { id, .. } => Reply::Intervals {
+            id,
             result: Err(reason),
         },
         Request::Check { seq, filter } => Reply::Check {

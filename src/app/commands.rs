@@ -44,6 +44,10 @@ impl App {
             }
             "phs" | "hierarchy" | "protocols" => self.open_stats(stats::Kind::Hierarchy, None),
             "expert" => self.open_stats(stats::Kind::Expert, None),
+            "io" | "graph" | "iograph" => self.open_graph(None),
+            "flow" | "flows" | "seq" => {
+                self.open_stats(stats::Kind::Flow, some(arg).as_deref());
+            }
             "objects" | "export-objects" => {
                 self.open_stats(stats::Kind::Objects, some(arg).as_deref());
             }

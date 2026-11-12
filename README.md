@@ -30,6 +30,8 @@ rule and preference Wireshark has works here, with the same results.
 - **Statistics**: conversations, endpoints, protocol hierarchy, expert
   information, per-protocol trees, exporting objects (HTTP, SMB, TFTP, ...),
   and the capture file's own properties.
+- **Packets over time** as a bar chart you can step along and filter from,
+  and a **flow sequence** (call flow) of who sent what to whom.
 - **Find** in packet bytes, in the details or in the summary, as text, a
   regular expression, hex or a filter expression, with the match pointed
   out where it lands; **go to** a packet; vim-style
@@ -260,6 +262,15 @@ and a hint:
 | `f`               | Count only packets matching the display filter              |
 | `a / p`           | Apply / prepare a filter from the row: one way, or combined |
 
+**Packets over time (:graph)**
+
+| Key            | Action                                   |
+| -------------- | ---------------------------------------- |
+| `h / l, ← / →` | Move along the bars                      |
+| `Enter`        | Filter the packet list to the bar's time |
+| `+ / -`        | Finer / coarser bars                     |
+| `b`            | Bytes instead of packets, and back       |
+
 **Column editor**
 
 | Key     | Action                                     |
@@ -283,6 +294,8 @@ and a hint:
 | `:endpoints [proto]`      | Endpoints                                                     |
 | `:phs`                    | Protocol hierarchy                                            |
 | `:expert`                 | Expert information                                            |
+| `:graph`                  | Packets over time                                             |
+| `:flow [proto]`           | Flow sequence: who sent what to whom (all, tcp, icmp)         |
 | `:objects [proto]`        | Exportable objects (http, smb, tftp, imf, ...)                |
 | `:stat <name>`            | A protocol's statistics tree (http, http_req, dns, rtsp, ...) |
 | `:follow [proto]`         | Follow the selected packet's stream                           |
@@ -468,8 +481,7 @@ dropped the rest.
   to decode a port as another protocol while it runs. Set the rule up once in
   Wireshark (Analyze > Decode As, then save), and packetshark applies it; use
   `-C` if you keep such rules in a separate profile.
-- No packet editing, no I/O graphs, no call-flow diagrams, no VoIP or RTP
-  analysis yet.
+- No packet editing, and no VoIP or RTP analysis yet.
 
 ## Development
 

@@ -127,6 +127,15 @@ pub const SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: "Packets over time (:graph)",
+        keys: &[
+            ("h / l, ← / →", "Move along the bars"),
+            ("Enter", "Filter the packet list to the bar's time"),
+            ("+ / -", "Finer / coarser bars"),
+            ("b", "Bytes instead of packets, and back"),
+        ],
+    },
+    Section {
         title: "Column editor",
         keys: &[
             ("Space", "Show or hide the column"),
@@ -148,6 +157,11 @@ pub const SECTIONS: &[Section] = &[
             (":endpoints [proto]", "Endpoints"),
             (":phs", "Protocol hierarchy"),
             (":expert", "Expert information"),
+            (":graph", "Packets over time"),
+            (
+                ":flow [proto]",
+                "Flow sequence: who sent what to whom (all, tcp, icmp)",
+            ),
             (
                 ":objects [proto]",
                 "Exportable objects (http, smb, tftp, imf, ...)",

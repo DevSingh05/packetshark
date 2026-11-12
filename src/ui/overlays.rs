@@ -74,6 +74,192 @@ pub fn help(app: &mut App, buf: &mut Buffer, body: Rect) {
     }
 }
 
+/// Packets over time, as a bar chart that fills the screen.
+pub fn graph(app: &mut App, buf: &mut Buffer, area: Rect) {
+    use crate::app::graph::{bar_cell, height_in_eighths};
+    fill(buf, area, app.theme.text);
+    let (dim, accent, text, error) = (
+        app.theme.dim,
+        app.theme.bar,
+        app.theme.text,
+        app.theme.error,
+    );
+    let cursor_style = app.theme.selected;
+    let Some(Overlay::Graph(graph)) = &app.overlay else {
+        return;
+    };
+    let unit = if graph.bytes { "Bytes" } else { "Packets" };
+    let title = format!("{unit} over time");
+    let right = if graph.filter.is_empty() {
+        "all packets".to_string()
+    } else {
+        format!("all packets, and those matching: {}", graph.filter)
+    };
+    let content = title_bar(app, buf, area, true, &title, &right);
+    let Some(Overlay::Graph(graph)) = &mut app.overlay else {
+        return;
+    };
+    if content.height < 6 || content.width < 20 {
+        return;
+    }
+    let footer = content.y + content.height - 1;
+    put(
+        buf,
+        content.x + 1,
+        footer,
+        content.width.saturating_sub(2),
+        "h l move · Enter filter to this bar · + - finer, coarser · b bytes or packets · Esc close",
+        dim,
+    );
+    let body = Rect {
+        y: content.y,
+        height: content.height - 1,
+        ..content
+    };
+    if graph.loading {
+        placeholder(buf, body, "Counting…", dim);
+        return;
+    }
+    if let Some(e) = &graph.error {
+        placeholder(buf, body, e, error);
+        return;
+    }
+    if graph.all.is_empty() {
+        placeholder(buf, body, "The capture has no packets to count.", dim);
+        return;
+    }
+    // Layout: a row saying what the cursor is on, the chart with a scale
+    // down its left side, and a row of times beneath.
+    const SCALE: u16 = 9;
+    let chart = Rect {
+        x: body.x + SCALE,
+        y: body.y + 1,
+        width: body.width.saturating_sub(SCALE + 1),
+        height: body.height.saturating_sub(3),
+    };
+    graph.columns = chart.width as usize;
+    let bars = graph.bars();
+    graph.cursor = graph.cursor.min(bars.len().saturating_sub(1));
+    let max = bars.iter().map(|(all, _)| *all).max().unwrap_or(0);
+    let amount = |v: u64| {
+        if graph.bytes {
+            human_bytes(v)
+        } else {
+            thousands(v)
+        }
+    };
+
+    // The scale: the tallest bar's value at the top, half of it half-way.
+    put_right(buf, body.x, chart.y, SCALE - 1, &amount(max), dim);
+    if chart.height >= 4 {
+        put_right(
+            buf,
+            body.x,
+            chart.y + chart.height / 2,
+            SCALE - 1,
+            &amount(max / 2),
+            dim,
+        );
+    }
+    put_right(
+        buf,
+        body.x,
+        chart.y + chart.height.saturating_sub(1),
+        SCALE - 1,
+        "0",
+        dim,
+    );
+
+    // With room to spare the bars are drawn wider, to use the screen.
+    let bar_width = (chart.width / bars.len().max(1) as u16).clamp(1, 4);
+    for (i, (all, shown)) in bars.iter().enumerate().take(chart.width as usize) {
+        let x = chart.x + i as u16 * bar_width;
+        let all_height = height_in_eighths(*all, max, chart.height);
+        let shown_height = height_in_eighths(*shown, max, chart.height);
+        let filtered = graph.shown.is_some();
+        for row in 0..chart.height {
+            let y = chart.y + chart.height - 1 - row;
+            // Under a filter the whole is drawn faintly, with the packets
+            // the filter shows in front of it.
+            let (cell, style) = match (bar_cell(shown_height, row), bar_cell(all_height, row)) {
+                (Some(c), _) if filtered => (c, accent),
+                (_, Some(c)) if filtered => (c, dim),
+                (_, Some(c)) => (c, accent),
+                _ => continue,
+            };
+            let style = if i == graph.cursor {
+                text.patch(style).patch(cursor_style)
+            } else {
+                text.patch(style)
+            };
+            put(
+                buf,
+                x,
+                y,
+                bar_width,
+                &cell.to_string().repeat(bar_width as usize),
+                style,
+            );
+        }
+        if i == graph.cursor {
+            // Mark the cursor's column even where the bar is short.
+            let base = chart.y + chart.height;
+            put(
+                buf,
+                x,
+                base,
+                bar_width,
+                &"▲".repeat(bar_width as usize),
+                accent,
+            );
+        }
+    }
+
+    // Times along the bottom: the start, the middle and the end.
+    let axis = chart.y + chart.height;
+    let (_, end) = graph.span(bars.len().saturating_sub(1));
+    let seconds = |s: f64| crate::util::human_duration(s);
+    if graph.cursor != 0 {
+        put(buf, chart.x, axis, chart.width, "0", dim);
+    }
+    let last = seconds(end);
+    let drawn = (bars.len() as u16 * bar_width).min(chart.width);
+    if drawn > width(&last) as u16 + 4 {
+        put_right(buf, chart.x, axis, drawn, &last, dim);
+    }
+
+    // What the cursor is on.
+    let (from, to) = graph.span(graph.cursor);
+    let (all, shown) = bars[graph.cursor];
+    let mut line = format!(
+        "{} to {}: {} {}",
+        seconds(from),
+        seconds(to),
+        amount(all),
+        if graph.bytes { "" } else { "packets" }
+    );
+    if graph.shown.is_some() {
+        line = format!("{line}, {} matching the filter", amount(shown));
+    }
+    let per_bar = graph.per_bar() as f64 * graph.interval_ms as f64 / 1000.0;
+    put(
+        buf,
+        body.x + 1,
+        body.y,
+        body.width.saturating_sub(2),
+        line.trim_end(),
+        text,
+    );
+    put_right(
+        buf,
+        body.x,
+        body.y,
+        body.width.saturating_sub(1),
+        &format!("{} a bar", seconds(per_bar)),
+        dim,
+    );
+}
+
 /// Plain text to read: a window that scrolls.
 pub fn text(app: &mut App, buf: &mut Buffer, body: Rect) {
     let Some(Overlay::Text { title, lines, .. }) = &app.overlay else {

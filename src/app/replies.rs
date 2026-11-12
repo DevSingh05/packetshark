@@ -99,6 +99,23 @@ impl App {
                     self.end_find();
                 }
             }
+            Reply::Intervals { id, result } => {
+                if let Some(Overlay::Graph(graph)) = &mut self.overlay
+                    && graph.request == id
+                {
+                    graph.loading = false;
+                    match result {
+                        Ok((all, shown)) => {
+                            graph.all = super::graph::fill(&all.intervals, all.last);
+                            // The filtered series is as long as the whole
+                            // one, so the two line up bar for bar.
+                            graph.shown = shown.map(|s| super::graph::fill(&s.intervals, all.last));
+                            graph.cursor = 0;
+                        }
+                        Err(e) => graph.error = Some(e),
+                    }
+                }
+            }
             Reply::Check { seq, result, .. } => {
                 self.filter.on_check(seq, result);
                 self.apply_checked_filter();

@@ -32,7 +32,13 @@ pub const COMMANDS: &[Command] = &[
     cmd("endpoints", "[proto]", "Endpoints"),
     cmd("expert", "", "Expert information"),
     cmd("filter", "<expr>", "Apply a display filter"),
+    cmd(
+        "flow",
+        "[proto]",
+        "Flow sequence: who sent what to whom, in order",
+    ),
     cmd("follow", "[proto]", "Follow the selected packet's stream"),
+    cmd("graph", "", "Packets over time"),
     cmd("help", "", "Show the keys and commands"),
     cmd("info", "", "The capture file's properties"),
     cmd("keylog", "<file>", "Decrypt TLS with a key log file"),
@@ -149,6 +155,7 @@ impl App {
                 fixed(&["eth", "ipv4", "ipv6", "tcp", "udp"])
             }
             ["objects" | "export-objects"] => self.tap_names(|i| &i.eo, "eo:"),
+            ["flow" | "flows" | "seq"] => self.tap_names(|i| &i.seqa, "seqa:"),
             ["stat" | "stats"] => self.tap_names(|i| &i.stats, "stat:"),
             ["follow"] => self
                 .detail

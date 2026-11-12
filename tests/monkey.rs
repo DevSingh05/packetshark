@@ -86,6 +86,11 @@ const PHRASES: &[&str] = &[
     ":marked\n",
     ":marks\n",
     ":info\n",
+    ":graph\n",
+    ":graph\nll+-b\n",
+    ":flow\n",
+    ":flow tcp\n\n",
+    "Sf",
     ":recent\n",
     ":map <f5> :conv<enter>\n",
     ":map j jj\n",
@@ -206,6 +211,7 @@ fn place(app: &App) -> &'static str {
         Some(Overlay::Stats(_)) => "statistics",
         Some(Overlay::Columns(_)) => "column editor",
         Some(Overlay::Text { .. }) => "text window",
+        Some(Overlay::Graph(_)) => "graph",
         None => match app.focus {
             Focus::Filter => "filter bar",
             Focus::List => "packet list",
@@ -303,6 +309,7 @@ fn random_input_never_breaks_the_app() {
             "follow stream",
             "statistics",
             "column editor",
+            "graph",
         ] {
             assert!(
                 visited.contains(place),

@@ -7,6 +7,7 @@ pub mod columns;
 pub mod detail;
 pub mod filter;
 pub mod follow;
+pub mod graph;
 pub mod help;
 pub mod keymap;
 pub mod list;
@@ -140,6 +141,8 @@ pub enum Overlay {
     Follow(Box<FollowView>),
     Stats(Box<StatsView>),
     Columns(ColumnEditor),
+    /// Packets over time.
+    Graph(Box<graph::IoGraph>),
     /// Plain text to read and scroll.
     Text {
         title: String,
@@ -1477,6 +1480,18 @@ impl App {
                     .map(ToString::to_string)
                     .collect(),
             },
+            stats::Kind::Flow => match &self.info {
+                Some(info) if !info.seqa.is_empty() => info
+                    .seqa
+                    .iter()
+                    .filter_map(|t| t.tap.strip_prefix("seqa:"))
+                    .map(|name| match name {
+                        "any" => "All".to_string(),
+                        other => other.to_ascii_uppercase(),
+                    })
+                    .collect(),
+                _ => vec!["All".to_string(), "TCP".to_string()],
+            },
             _ => Vec::new(),
         };
         let mut tab = match kind {
@@ -1484,6 +1499,7 @@ impl App {
                 tabs.iter().position(|t| t == "TCP").unwrap_or(0)
             }
             stats::Kind::Objects => tabs.iter().position(|t| t == "HTTP").unwrap_or(0),
+            stats::Kind::Flow => tabs.iter().position(|t| t == "All").unwrap_or(0),
             _ => 0,
         };
         if let Some(name) = wanted.filter(|_| kind.has_tabs()) {
@@ -1491,6 +1507,7 @@ impl App {
                 "eth" | "ethernet" => "Ethernet".to_string(),
                 "ip" | "ipv4" => "IPv4".to_string(),
                 "ip6" | "ipv6" => "IPv6".to_string(),
+                "any" | "all" => "All".to_string(),
                 other => other.to_ascii_uppercase(),
             };
             tab = if let Some(i) = tabs.iter().position(|t| t.eq_ignore_ascii_case(&name)) {
@@ -1744,6 +1761,7 @@ impl App {
                 entry('h', "Protocol hierarchy", Hierarchy),
                 entry('x', "Expert information", Expert),
                 entry('o', "Export objects", Objects),
+                entry('f', "Flow sequence", Flow),
             ],
         );
     }
@@ -1765,6 +1783,39 @@ impl App {
             Action::Stats(kind) => self.open_stats(kind, None),
             Action::Command(line) => self.run_command(&line),
         }
+    }
+
+    // ---- packets over time -----------------------------------------------
+
+    /// Open the graph of packets over time, or redraw it with buckets of
+    /// `interval_ms`.
+    pub(super) fn open_graph(&mut self, interval_ms: Option<u64>) {
+        let Some(status) = &self.status else {
+            return self.info("Open a capture first.");
+        };
+        // Enough buckets for a wide terminal; a narrow one merges them.
+        let interval_ms = interval_ms.unwrap_or_else(|| graph::interval_for(status.duration, 240));
+        self.tap_seq += 1;
+        let request = self.tap_seq;
+        let previous = match self.overlay.take() {
+            Some(Overlay::Graph(graph)) => Some(graph),
+            _ => None,
+        };
+        let filter = self.filter.applied.clone();
+        self.overlay = Some(Overlay::Graph(Box::new(graph::IoGraph {
+            request,
+            loading: true,
+            interval_ms,
+            filter: filter.clone(),
+            bytes: previous.as_ref().is_some_and(|g| g.bytes),
+            columns: previous.as_ref().map_or(0, |g| g.columns),
+            ..Default::default()
+        })));
+        self.send(Request::Intervals {
+            id: request,
+            interval_ms,
+            filter,
+        });
     }
 
     // ---- the capture file ------------------------------------------------

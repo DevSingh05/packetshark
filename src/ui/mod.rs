@@ -58,6 +58,15 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
             Some(Overlay::Menu(_)) => overlays::menu(app, buf, body),
             Some(Overlay::Columns(_)) => overlays::columns(app, buf, body),
             Some(Overlay::Text { .. }) => overlays::text(app, buf, body),
+            Some(Overlay::Graph(_)) => overlays::graph(
+                app,
+                buf,
+                Rect {
+                    y: area.y,
+                    height: area.height - 1,
+                    ..area
+                },
+            ),
             Some(Overlay::Follow(_)) => overlays::follow(
                 app,
                 buf,

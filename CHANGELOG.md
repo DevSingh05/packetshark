@@ -6,6 +6,12 @@ Notable changes to packetshark. The format follows
 
 ## Unreleased
 
+### Added
+
+- `:graph` shows packets (or bytes) over time as a bar chart; Enter filters
+  the list to the bar under the cursor.
+- `:flow` lists who sent what to whom, in order: a call flow.
+
 ## 0.2.0 - 2026-11-12
 
 ### Added

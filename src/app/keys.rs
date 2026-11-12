@@ -815,6 +815,44 @@ impl App {
                     *top = (*top as i64).saturating_add(delta(m, height)).max(0) as usize;
                 }
             }
+            Some(Overlay::Graph(graph)) => match key.code {
+                _ if closes => self.overlay = None,
+                KeyCode::Left | KeyCode::Char('h') => graph.move_cursor(-1),
+                KeyCode::Right | KeyCode::Char('l') => graph.move_cursor(1),
+                KeyCode::Home | KeyCode::Char('g' | '0') => graph.move_cursor(i64::MIN / 4),
+                KeyCode::End | KeyCode::Char('G' | '$') => graph.move_cursor(i64::MAX / 4),
+                KeyCode::Char('b') => graph.bytes = !graph.bytes,
+                KeyCode::Char(c @ ('+' | '=' | '-' | '_')) => {
+                    let finer = matches!(c, '+' | '=');
+                    let interval = super::graph::step_interval(graph.interval_ms, finer);
+                    let capture_ms = self.status.as_ref().map_or(0.0, |s| s.duration * 1000.0);
+                    // Between one bar for the whole capture and more buckets
+                    // than are worth counting. Judged by the capture's
+                    // length, not by the bars on screen, so that the key
+                    // can be pressed again before the last answer is in.
+                    let sensible = if finer {
+                        capture_ms / interval as f64 <= 100_000.0
+                    } else {
+                        (graph.interval_ms as f64) < capture_ms
+                    };
+                    if interval != graph.interval_ms && sensible {
+                        self.open_graph(Some(interval));
+                    }
+                }
+                KeyCode::Enter
+                    if !graph.loading && graph.error.is_none() && !graph.all.is_empty() =>
+                {
+                    let range = graph.filter_at_cursor();
+                    let filter = if graph.filter.is_empty() {
+                        range
+                    } else {
+                        format!("({}) && {range}", graph.filter)
+                    };
+                    self.overlay = None;
+                    self.apply_filter(&filter);
+                }
+                _ => {}
+            },
             Some(Overlay::Text { top, .. }) => {
                 if closes {
                     self.overlay = None;
@@ -1059,6 +1097,7 @@ impl App {
                     }
                     Overlay::Follow(view) => view.scroll_by(step),
                     Overlay::Stats(view) => view.move_by(step),
+                    Overlay::Graph(graph) => graph.move_cursor(step.signum()),
                     Overlay::Menu(_) | Overlay::Columns(_) => {}
                 }
             } else if mouse.kind == MouseEventKind::Down(MouseButton::Left)
