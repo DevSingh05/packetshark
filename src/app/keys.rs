@@ -1,0 +1,743 @@
+//! Keyboard and mouse handling.
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
+
+use super::{App, Focus, LayoutKind, Level, Overlay, Prompt, PromptKind};
+use crate::sharkd::{Request, Seek};
+use crate::text_input::{Edit, TextInput};
+
+/// A cursor movement, shared by every scrollable thing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Motion {
+    Lines(i64),
+    Pages(i64),
+    HalfPages(i64),
+    Home,
+    End,
+}
+
+fn motion(key: KeyEvent) -> Option<Motion> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    Some(match key.code {
+        KeyCode::Char('j') | KeyCode::Down if !ctrl => Motion::Lines(1),
+        KeyCode::Char('k') | KeyCode::Up if !ctrl => Motion::Lines(-1),
+        KeyCode::Char('n') if ctrl => Motion::Lines(1),
+        KeyCode::Char('p') if ctrl => Motion::Lines(-1),
+        KeyCode::PageDown => Motion::Pages(1),
+        KeyCode::PageUp => Motion::Pages(-1),
+        KeyCode::Char('f') if ctrl => Motion::Pages(1),
+        KeyCode::Char('b') if ctrl => Motion::Pages(-1),
+        KeyCode::Char('d') if ctrl => Motion::HalfPages(1),
+        KeyCode::Char('u') if ctrl => Motion::HalfPages(-1),
+        KeyCode::Char('g') | KeyCode::Home if !ctrl => Motion::Home,
+        KeyCode::Char('G') | KeyCode::End if !ctrl => Motion::End,
+        _ => return None,
+    })
+}
+
+/// Turn a motion into a line delta for a view `height` lines tall.
+fn delta(m: Motion, height: u16) -> i64 {
+    let page = (i64::from(height) - 1).max(1);
+    match m {
+        Motion::Lines(n) => n,
+        Motion::Pages(n) => n * page,
+        Motion::HalfPages(n) => n * (page / 2).max(1),
+        Motion::Home => i64::MIN / 4,
+        Motion::End => i64::MAX / 4,
+    }
+}
+
+fn contains(area: Rect, x: u16, y: u16) -> bool {
+    area.contains(Position { x, y })
+}
+
+impl App {
+    pub(super) fn on_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('c') {
+            if self.capturing() {
+                self.stop_capture();
+            } else {
+                self.quit = true;
+            }
+            return;
+        }
+        if self.filter.apply_when_checked {
+            self.held_keys.push(key);
+            return;
+        }
+        if self.prompt.is_some() {
+            self.key_prompt(key);
+        } else if self.overlay.is_some() {
+            self.key_overlay(key);
+        } else if self.focus == Focus::Filter {
+            self.key_filter(key);
+        } else {
+            self.key_main(key);
+        }
+    }
+
+    pub(super) fn stop_capture(&mut self) {
+        if self.capturing() {
+            if let Some(capture) = &mut self.capture {
+                capture.stop();
+            }
+            self.info("Capture stopped. Press q to quit.");
+        } else {
+            self.info("No capture is running.");
+        }
+    }
+
+    pub(super) fn on_paste(&mut self, text: &str) {
+        if let Some(prompt) = &mut self.prompt {
+            prompt.input.insert_str(text);
+        } else if self.focus == Focus::Filter {
+            if std::mem::take(&mut self.filter.select_all) {
+                self.filter.input.clear();
+            }
+            self.filter.input.insert_str(text);
+            self.filter_edited();
+        }
+    }
+
+    fn open_prompt(&mut self, kind: PromptKind, initial: &str) {
+        let mut input = TextInput::new();
+        if kind == PromptKind::Command {
+            input.set_history(self.command_history.clone());
+        }
+        input.set(initial);
+        self.prompt = Some(Prompt { kind, input });
+    }
+
+    fn key_prompt(&mut self, key: KeyEvent) {
+        let Some(prompt) = &mut self.prompt else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.prompt = None,
+            KeyCode::Enter => {
+                let Some(prompt) = self.prompt.take() else {
+                    return;
+                };
+                let text = prompt.input.text();
+                match prompt.kind {
+                    PromptKind::Command => {
+                        if !text.trim().is_empty() {
+                            self.command_history.retain(|c| c != &text);
+                            self.command_history.push(text.clone());
+                        }
+                        self.run_command(&text);
+                    }
+                    PromptKind::Find => self.start_find(&text),
+                    PromptKind::SaveStream => self.save_stream(&text),
+                }
+            }
+            KeyCode::Up => {
+                prompt.input.history_prev();
+            }
+            KeyCode::Down => {
+                prompt.input.history_next();
+            }
+            KeyCode::Backspace if prompt.input.is_empty() => self.prompt = None,
+            _ => {
+                prompt.input.handle_key(key);
+            }
+        }
+    }
+
+    // ---- filter bar -------------------------------------------------------
+
+    /// Revalidate and recomplete after the filter text changed.
+    fn filter_edited(&mut self) {
+        if let Some((seq, filter)) = self.filter.check_request() {
+            self.send(Request::Check { seq, filter });
+        }
+        self.filter_moved();
+    }
+
+    fn filter_moved(&mut self) {
+        if let Some((seq, prefix)) = self.filter.complete_request() {
+            self.send(Request::Complete { seq, prefix });
+        }
+    }
+
+    fn key_filter(&mut self, key: KeyEvent) {
+        self.filter.apply_when_checked = false;
+        if std::mem::take(&mut self.filter.select_all) {
+            // The text is "selected": typing replaces it, deleting removes it,
+            // and anything else (arrows, Enter) just drops the selection.
+            let plain = !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+            match key.code {
+                KeyCode::Char(_) if plain => self.filter.input.clear(),
+                KeyCode::Backspace | KeyCode::Delete => {
+                    self.filter.input.clear();
+                    self.filter_edited();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let popup = self.filter.has_completions();
+        match key.code {
+            KeyCode::Esc if popup => self.filter.close_completions(),
+            KeyCode::Esc => {
+                // Abandon the edit.
+                let applied = self.filter.applied.clone();
+                self.filter.input.set(&applied);
+                self.filter_edited();
+                self.filter.close_completions();
+                self.leave_filter();
+            }
+            KeyCode::Enter => {
+                if popup && self.filter.completions.selected.is_some() {
+                    self.filter.accept_completion();
+                    self.filter_edited();
+                    return;
+                }
+                match &self.filter.validity {
+                    super::filter::Validity::Invalid(reason) => {
+                        let reason = reason.clone();
+                        self.error(format!("Invalid filter: {reason}"));
+                        return;
+                    }
+                    super::filter::Validity::Checking => {
+                        // Typed faster than sharkd answers: apply once it has.
+                        self.filter.apply_when_checked = true;
+                        return;
+                    }
+                    _ => {}
+                }
+                let text = self.filter.input.text();
+                self.apply_filter(&text);
+                self.leave_filter();
+            }
+            KeyCode::Tab if popup => {
+                self.filter.accept_completion();
+                self.filter_edited();
+            }
+            KeyCode::Tab => {
+                self.leave_filter();
+                self.focus = Focus::List;
+            }
+            KeyCode::Down if popup => self.filter.move_completion(1),
+            KeyCode::Up if popup => self.filter.move_completion(-1),
+            KeyCode::Up => {
+                if self.filter.input.history_prev() {
+                    self.filter_edited();
+                    self.filter.close_completions();
+                }
+            }
+            KeyCode::Down => {
+                if self.filter.input.history_next() {
+                    self.filter_edited();
+                    self.filter.close_completions();
+                }
+            }
+            _ => match self.filter.input.handle_key(key) {
+                Edit::Changed => self.filter_edited(),
+                Edit::Moved => self.filter_moved(),
+                Edit::Ignored => {}
+            },
+        }
+    }
+
+    // ---- main panes -------------------------------------------------------
+
+    fn key_main(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl {
+            match key.code {
+                KeyCode::Char('r') => {
+                    self.info("Reloading.");
+                    self.reload();
+                    return;
+                }
+                KeyCode::Char('t') => {
+                    self.toggle_time_reference();
+                    return;
+                }
+                _ => {}
+            }
+        } else {
+            match key.code {
+                KeyCode::Char('q') => {
+                    self.quit = true;
+                    return;
+                }
+                KeyCode::Char('?') | KeyCode::F(1) => {
+                    self.overlay = Some(Overlay::Help { top: 0 });
+                    return;
+                }
+                KeyCode::Tab => return self.cycle_focus(1),
+                KeyCode::BackTab => return self.cycle_focus(-1),
+                KeyCode::Char('1') => return self.focus = Focus::List,
+                KeyCode::Char('2') => return self.focus = Focus::Tree,
+                KeyCode::Char('3') => return self.focus = Focus::Hex,
+                KeyCode::Char('/') => return self.focus_filter(),
+                KeyCode::Char('x') => {
+                    if self.filter.applied.is_empty() && self.filter.input.is_empty() {
+                        self.info("No filter is applied.");
+                    } else {
+                        self.apply_filter("");
+                    }
+                    return;
+                }
+                KeyCode::Char(':') => return self.open_prompt(PromptKind::Command, ""),
+                KeyCode::Char('s') => return self.open_prompt(PromptKind::Find, ""),
+                KeyCode::Char('n') => return self.find_step(Seek::Next),
+                KeyCode::Char('N') => return self.find_step(Seek::Prev),
+                KeyCode::Char('z') => return self.zoom = !self.zoom,
+                KeyCode::Esc => {
+                    if self.zoom {
+                        self.zoom = false;
+                    }
+                    return;
+                }
+                KeyCode::Char('L') => {
+                    self.layout = match self.layout {
+                        LayoutKind::Stacked => LayoutKind::Side,
+                        LayoutKind::Side => LayoutKind::Stacked,
+                    };
+                    return;
+                }
+                KeyCode::Char('+' | '=') => return self.resize_pane(5),
+                KeyCode::Char('-' | '_') => return self.resize_pane(-5),
+                KeyCode::Char('t') => return self.cycle_time_format(),
+                KeyCode::Char('c') => {
+                    self.theme.row_colors = self.theme.row_colors.next();
+                    let name = self.theme.row_colors.name();
+                    self.info(format!("Row colours: {name}."));
+                    return;
+                }
+                KeyCode::Char('F') => return self.follow_selected(None),
+                KeyCode::Char('S') => return self.stats_menu(),
+                KeyCode::Char('a') => return self.filter_menu(false),
+                KeyCode::Char('p') => return self.filter_menu(true),
+                KeyCode::Char('y') => return self.copy_menu(),
+                KeyCode::Char('m') => return self.toggle_mark(),
+                _ => {}
+            }
+        }
+        match self.focus {
+            Focus::List => self.key_list(key),
+            Focus::Tree => self.key_tree(key),
+            Focus::Hex => self.key_hex(key),
+            Focus::Filter => {}
+        }
+    }
+
+    fn cycle_focus(&mut self, step: i64) {
+        const ORDER: [Focus; 3] = [Focus::List, Focus::Tree, Focus::Hex];
+        let i = ORDER.iter().position(|f| *f == self.focus).unwrap_or(0) as i64;
+        self.focus = ORDER[(i + step).rem_euclid(3) as usize];
+    }
+
+    fn resize_pane(&mut self, step: i16) {
+        let i = match self.focus {
+            Focus::List | Focus::Filter => 0,
+            Focus::Tree => 1,
+            Focus::Hex => 2,
+        };
+        self.split[i] = (self.split[i] as i16 + step).clamp(10, 200) as u16;
+    }
+
+    fn cycle_time_format(&mut self) {
+        if !self.columns.can_change_time() {
+            self.info("The time format cannot be changed with this sharkd version.");
+            return;
+        }
+        self.time_format = self.time_format.next();
+        self.list.widths.clear();
+        self.refresh_list();
+        let name = self.time_format.name();
+        self.info(format!("Time: {name}."));
+    }
+
+    fn toggle_mark(&mut self) {
+        let Some(num) = self.list.selected_num() else {
+            return;
+        };
+        if !self.marks.remove(&num) {
+            self.marks.insert(num);
+        }
+        self.list.move_by(1);
+    }
+
+    fn toggle_time_reference(&mut self) {
+        let Some(num) = self.list.selected_num() else {
+            return;
+        };
+        if self.time_refs.remove(&num) {
+            self.info(format!("Packet {num} is no longer a time reference."));
+        } else {
+            self.time_refs.insert(num);
+            self.info(format!("Packet {num} is now a time reference."));
+        }
+        self.refresh_list();
+    }
+
+    fn key_list(&mut self, key: KeyEvent) {
+        if let Some(m) = motion(key) {
+            match m {
+                Motion::Home => self.list.select(0),
+                Motion::End => self.list.select(u32::MAX),
+                m => self.list.move_by(delta(m, self.list.height)),
+            }
+            return;
+        }
+        if let KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right = key.code {
+            self.focus = Focus::Tree;
+        }
+    }
+
+    fn key_tree(&mut self, key: KeyEvent) {
+        let Some(detail) = &self.detail else { return };
+        let tree = &detail.tree;
+        if let Some(m) = motion(key) {
+            match m {
+                Motion::Home => self.tree.select(0, tree),
+                Motion::End => self.tree.select(usize::MAX, tree),
+                m => self.tree.move_by(delta(m, self.tree.height), tree),
+            }
+            self.sync_hex_to_tree();
+            return;
+        }
+        match key.code {
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                // "Response in frame 8" style fields are links.
+                if let Some(target) = self.selected_node().and_then(|n| n.fnum) {
+                    self.goto_frame(target);
+                    return;
+                }
+                self.tree.toggle(tree);
+            }
+            KeyCode::Char('l') | KeyCode::Right => self.tree.expand_or_descend(tree),
+            KeyCode::Char('h') | KeyCode::Left => self.tree.collapse_or_ascend(tree),
+            KeyCode::Char('*') => self.tree.expand_subtree(tree),
+            KeyCode::Char('e') => {
+                let on = !self.tree.expand_all;
+                self.tree.set_expand_all(tree, on);
+            }
+            _ => return,
+        }
+        self.sync_hex_to_tree();
+    }
+
+    fn key_hex(&mut self, key: KeyEvent) {
+        let len = self.hex_bytes().len();
+        let per_row = self.hex.per_row() as i64;
+        let step = match key.code {
+            KeyCode::Char('h') | KeyCode::Left => Some(-1),
+            KeyCode::Char('l') | KeyCode::Right => Some(1),
+            KeyCode::Char('j') | KeyCode::Down => Some(per_row),
+            KeyCode::Char('k') | KeyCode::Up => Some(-per_row),
+            KeyCode::Char('0') => Some(-((self.hex.cursor % per_row as usize) as i64)),
+            KeyCode::Char('$') => Some(per_row - 1 - (self.hex.cursor % per_row as usize) as i64),
+            KeyCode::Char('[') => {
+                self.switch_source(-1);
+                None
+            }
+            KeyCode::Char(']') => {
+                self.switch_source(1);
+                None
+            }
+            _ => motion(key).map(|m| match m {
+                Motion::Home => -(len as i64),
+                Motion::End => len as i64,
+                m => delta(m, self.hex.height) * per_row,
+            }),
+        };
+        if let Some(step) = step {
+            self.hex.move_cursor(step, len);
+            self.sync_tree_to_hex();
+        }
+    }
+
+    fn switch_source(&mut self, step: i64) {
+        if !self.detail_ready() {
+            return;
+        }
+        let Some(detail) = &self.detail else { return };
+        let n = detail.sources.len() as i64;
+        if n < 2 {
+            self.info("This packet has only one data source.");
+            return;
+        }
+        self.hex.source = (self.hex.source as i64 + step).rem_euclid(n) as usize;
+        self.hex.cursor = 0;
+        self.hex.top = 0;
+    }
+
+    // ---- overlays ---------------------------------------------------------
+
+    fn key_overlay(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char(':') && !matches!(self.overlay, Some(Overlay::Menu(_))) {
+            return self.open_prompt(PromptKind::Command, "");
+        }
+        let closes = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
+        match &mut self.overlay {
+            None => {}
+            Some(Overlay::Help { top }) => {
+                if closes || matches!(key.code, KeyCode::Char('?') | KeyCode::F(1)) {
+                    self.overlay = None;
+                } else if let Some(m) = motion(key) {
+                    let height = self.areas.overlay.height;
+                    *top = (*top as i64).saturating_add(delta(m, height)).max(0) as usize;
+                }
+            }
+            Some(Overlay::Menu(menu)) => {
+                let n = menu.items.len() as i64;
+                let chosen = match key.code {
+                    _ if closes => {
+                        self.overlay = None;
+                        return;
+                    }
+                    KeyCode::Enter => Some(menu.selected),
+                    KeyCode::Down | KeyCode::Char('j') if key.modifiers.is_empty() => {
+                        menu.selected = (menu.selected as i64 + 1).rem_euclid(n) as usize;
+                        None
+                    }
+                    KeyCode::Up | KeyCode::Char('k') if key.modifiers.is_empty() => {
+                        menu.selected = (menu.selected as i64 - 1).rem_euclid(n) as usize;
+                        None
+                    }
+                    KeyCode::Char(c) => menu.items.iter().position(|i| i.key == c),
+                    _ => None,
+                };
+                if let Some(i) = chosen {
+                    let action = menu.items[i].action.clone();
+                    self.overlay = None;
+                    self.run_action(action);
+                }
+            }
+            Some(Overlay::Follow(view)) => {
+                if closes {
+                    self.overlay = None;
+                    return;
+                }
+                if let Some(m) = motion(key) {
+                    match m {
+                        Motion::Home => view.scroll_by(i64::MIN / 4),
+                        Motion::End => view.scroll_to_end(),
+                        m => view.scroll_by(delta(m, view.height)),
+                    }
+                    return;
+                }
+                match key.code {
+                    KeyCode::Char('m') => {
+                        let mode = view.mode.next();
+                        view.set_mode(mode);
+                    }
+                    KeyCode::Char('d') => {
+                        let side = view.side.next();
+                        view.set_side(side);
+                    }
+                    KeyCode::Char('f') => {
+                        let filter = view.filter.clone();
+                        self.overlay = None;
+                        self.apply_filter(&filter);
+                    }
+                    KeyCode::Enter => {
+                        if let Some(frame) = view.frame_at_top() {
+                            self.overlay = None;
+                            self.goto_frame(frame);
+                        }
+                    }
+                    KeyCode::Char('y') => {
+                        let text = view.text();
+                        self.copy("stream", text);
+                    }
+                    KeyCode::Char('w') => {
+                        let name = format!("stream-{}.bin", view.protocol.to_ascii_lowercase());
+                        self.open_prompt(PromptKind::SaveStream, &name);
+                    }
+                    _ => {}
+                }
+            }
+            Some(Overlay::Stats(view)) => {
+                if closes {
+                    self.overlay = None;
+                    return;
+                }
+                if let Some(m) = motion(key) {
+                    match m {
+                        Motion::Home => view.move_by(i64::MIN / 4),
+                        Motion::End => view.move_by(i64::MAX / 4),
+                        m => view.move_by(delta(m, view.height)),
+                    }
+                    return;
+                }
+                match key.code {
+                    KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
+                        if view.switch_tab(1) {
+                            self.request_stats();
+                        }
+                    }
+                    KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+                        if view.switch_tab(-1) {
+                            self.request_stats();
+                        }
+                    }
+                    KeyCode::Char('o') => view.cycle_sort(),
+                    KeyCode::Char('r') => view.reverse_sort(),
+                    KeyCode::Char('f') => {
+                        view.limit_to_filter = !view.limit_to_filter;
+                        self.request_stats();
+                    }
+                    KeyCode::Enter => self.activate_stats_row(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn activate_stats_row(&mut self) {
+        let Some(Overlay::Stats(view)) = &self.overlay else {
+            return;
+        };
+        let Some(row) = view.selected_row().cloned() else {
+            return;
+        };
+        if let Some(token) = row.token {
+            let name = row.filename.filter(|n| !n.trim().is_empty());
+            let safe = super::commands::safe_file_name(name.as_deref().unwrap_or("object.bin"));
+            let dest =
+                super::commands::unique_path(&self.download_dir.join(safe).to_string_lossy());
+            self.send(Request::Download { token, dest });
+        } else if let Some(filter) = row.filter {
+            self.overlay = None;
+            self.apply_filter(&filter);
+        } else if let Some(frame) = row.frame {
+            self.overlay = None;
+            self.goto_frame(frame);
+        }
+    }
+
+    // ---- mouse ------------------------------------------------------------
+
+    pub(super) fn on_mouse(&mut self, mouse: MouseEvent) {
+        let (x, y) = (mouse.column, mouse.row);
+        let wheel = match mouse.kind {
+            MouseEventKind::ScrollDown => Some(3),
+            MouseEventKind::ScrollUp => Some(-3),
+            _ => None,
+        };
+        if self.prompt.is_some() {
+            return;
+        }
+        if let Some(overlay) = &mut self.overlay {
+            if let Some(step) = wheel {
+                match overlay {
+                    Overlay::Help { top } => *top = (*top as i64 + step).max(0) as usize,
+                    Overlay::Follow(view) => view.scroll_by(step),
+                    Overlay::Stats(view) => view.move_by(step),
+                    Overlay::Menu(_) => {}
+                }
+            } else if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+                && contains(self.areas.overlay, x, y)
+            {
+                let line = (y - self.areas.overlay.y) as usize;
+                match overlay {
+                    Overlay::Stats(view) => {
+                        let target = view.top + line;
+                        if target < view.rows.len() {
+                            view.selected = target;
+                        }
+                    }
+                    Overlay::Menu(menu) if line < menu.items.len() => {
+                        let action = menu.items[line].action.clone();
+                        self.overlay = None;
+                        self.run_action(action);
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+        let areas = self.areas;
+        if let Some(step) = wheel {
+            if contains(areas.list, x, y) {
+                self.list.scroll_by(step);
+            } else if contains(areas.tree, x, y) {
+                self.tree.scroll_by(step);
+            } else if contains(areas.hex, x, y) {
+                let len = self.hex_bytes().len();
+                self.hex.scroll_by(step, len);
+            }
+            return;
+        }
+        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return;
+        }
+        if contains(areas.filter, x, y) {
+            self.focus_filter();
+            self.filter.select_all = false;
+        } else if contains(areas.list, x, y) {
+            if self.focus == Focus::Filter {
+                self.leave_filter();
+            }
+            self.focus = Focus::List;
+            let index = self.list.top + u32::from(y - areas.list.y);
+            if index < self.list.len() {
+                self.list.select(index);
+            }
+        } else if contains(areas.tree, x, y) {
+            if self.focus == Focus::Filter {
+                self.leave_filter();
+            }
+            self.focus = Focus::Tree;
+            let Some(detail) = &self.detail else { return };
+            let index = self.tree.top + (y - areas.tree.y) as usize;
+            if index < self.tree.lines.len() {
+                // Clicking the selected line again toggles it.
+                if index == self.tree.selected {
+                    self.tree.toggle(&detail.tree);
+                } else {
+                    self.tree.select(index, &detail.tree);
+                }
+                self.sync_hex_to_tree();
+            }
+        } else if contains(areas.hex, x, y) {
+            if self.focus == Focus::Filter {
+                self.leave_filter();
+            }
+            self.focus = Focus::Hex;
+            let row = self.hex.top + (y - areas.hex.y) as usize;
+            let geometry = crate::ui::hex::Geometry::new(areas.hex.width, self.hex_bytes().len());
+            let column = geometry.column_at(x - areas.hex.x);
+            if let Some(column) = column {
+                let offset = row * self.hex.per_row() + column;
+                if offset < self.hex_bytes().len() {
+                    self.hex.cursor = offset;
+                    self.sync_tree_to_hex();
+                }
+            }
+        }
+    }
+
+    fn save_stream(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let Some(Overlay::Follow(view)) = &self.overlay else {
+            return;
+        };
+        let payload = view.payload();
+        let path = super::commands::expand_path(name);
+        match std::fs::write(&path, &payload) {
+            Ok(()) => self.info(format!(
+                "Saved {} ({}).",
+                path.display(),
+                crate::util::human_bytes(payload.len() as u64)
+            )),
+            Err(e) => self.say(
+                Level::Error,
+                format!("Could not write {}: {e}", path.display()),
+            ),
+        }
+    }
+}

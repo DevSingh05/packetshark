@@ -1,0 +1,31 @@
+# packetshark configuration. Copy to ~/.config/packetshark/config.toml.
+# Every key is optional; the values shown are the defaults.
+
+# Path to sharkd. By default it is looked up on $PATH and in the places
+# Wireshark usually installs it.
+# sharkd = "/opt/homebrew/bin/sharkd"
+
+# Wireshark configuration profile to use (same as -C).
+# profile = "Default"
+
+[ui]
+# How packet rows are coloured:
+#   wireshark  foreground and background from your colouring rules
+#   tint       only the text is coloured; the terminal background is kept
+#   off        no per-packet colours
+row_colors = "wireshark"
+
+# stacked: list, details and bytes on top of each other
+# side:    list on top; details and bytes next to each other
+layout = "stacked"
+
+# Whether the terminal background is dark or light. Only "tint" uses this, to
+# pick the readable one of a rule's two colours. "auto" reads $COLORFGBG and
+# assumes dark when it is not set.
+background = "auto"
+
+# Capture the mouse. Turn off to let the terminal select text.
+mouse = true
+
+# Start with the details tree fully expanded.
+expand_all = false
