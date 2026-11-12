@@ -190,6 +190,14 @@ pub const SECTIONS: &[Section] = &[
             (":marks", "List the marks set with m, and go to one"),
             (":unmark", "Remove all marks"),
             (":keylog <file>", "Decrypt TLS with a key log file"),
+            (
+                ":decode <table> <value> <proto>",
+                "Decode As, e.g. :decode tcp.port 8080 http (:decode clear undoes)",
+            ),
+            (
+                ":profile [name]",
+                "Switch Wireshark configuration profile (a list, without a name)",
+            ),
             (":set <pref> <value>", "Set a Wireshark preference"),
             (
                 ":time <format>",

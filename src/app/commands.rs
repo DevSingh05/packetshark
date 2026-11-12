@@ -6,7 +6,6 @@ use std::process::{Command, Stdio};
 use super::columns::TimeFormat;
 use super::{App, Event, LayoutKind, Level, Overlay, stats};
 use crate::capture::locate_tool;
-use crate::sharkd::Request;
 use crate::theme::RowColors;
 
 impl App {
@@ -56,6 +55,18 @@ impl App {
             "w" | "write" | "export" | "save" => self.export(arg),
             "marked" => self.show_marked(),
             "marks" => self.marks_menu(),
+            "profile" | "profiles" => {
+                if arg.is_empty() {
+                    self.profile_menu();
+                } else {
+                    self.use_profile(arg.strip_prefix("use ").unwrap_or(arg).trim());
+                }
+            }
+            "decode" | "decode-as" => match arg {
+                "" => self.decode_as_menu(),
+                "clear" | "reset" | "none" => self.clear_decode_as(),
+                rule => self.decode_as(rule),
+            },
             "recent" | "recents" => self.recent_menu(),
             "info" | "capinfo" | "properties" => self.capture_properties(),
             "map" => self.map_key(arg),
@@ -133,16 +144,10 @@ impl App {
                 if !path.is_file() {
                     return self.error(format!("{} is not a file.", path.display()));
                 }
-                self.send(Request::SetConf {
-                    name: "tls.keylog_file".into(),
-                    value: path.to_string_lossy().into_owned(),
-                });
+                self.set_preference("tls.keylog_file", &path.to_string_lossy());
             }
             "set" => match arg.split_once(char::is_whitespace) {
-                Some((pref, value)) => self.send(Request::SetConf {
-                    name: pref.to_string(),
-                    value: value.trim().to_string(),
-                }),
+                Some((pref, value)) => self.set_preference(pref, value.trim()),
                 None => self.error("Usage: :set <preference> <value>, e.g. :set tcp.desegment_tcp_streams FALSE"),
             },
             "time" => match TimeFormat::parse(arg) {

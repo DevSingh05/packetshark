@@ -109,6 +109,7 @@ impl Harness {
         let launch = Launch {
             program: sharkd,
             profile: None,
+            config_dir: None,
         };
         let app = App::new(
             launch,

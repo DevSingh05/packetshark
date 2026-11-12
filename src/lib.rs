@@ -8,3 +8,4 @@ pub mod text_input;
 pub mod theme;
 pub mod ui;
 pub mod util;
+pub mod wsconfig;

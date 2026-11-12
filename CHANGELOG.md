@@ -11,8 +11,17 @@ Notable changes to packetshark. The format follows
 - `:graph` shows packets (or bytes) over time as a bar chart; Enter filters
   the list to the bar under the cursor.
 - `:flow` lists who sent what to whom, in order: a call flow.
+- `:profile` switches Wireshark configuration profile while running.
+- `:decode tcp.port 8080 http`, or `-d` at startup, adds a Decode As rule.
+  Your Wireshark configuration is not written to.
 - `v` in the bytes pane selects a range of bytes, and `y` copies it as hex,
   text, an escaped string, a C array, base64 or a hex dump.
+
+### Fixed
+
+- A profile given with `-C`, or as `profile` in the config file, made sharkd
+  exit, so that nothing could be opened. Profiles work now, and one that
+  does not exist is reported at startup.
 
 ## 0.2.0 - 2026-11-12
 

@@ -45,8 +45,10 @@ rule and preference Wireshark has works here, with the same results.
   a command such as `xclip`, where the terminal cannot).
 - **Live capture** through `dumpcap`, a capture **piped in on stdin**, or a
   file that another program is still writing.
-- **Your Wireshark profile**: columns, colouring rules and preferences are
-  picked up as they are; `-C` selects another profile.
+- **Your Wireshark profile**: columns, colouring rules, preferences and
+  Decode As rules are picked up as they are. `-C` or `:profile` selects
+  another profile, and `:decode tcp.port 8080 http` (or `-d`) adds a Decode
+  As rule without touching your Wireshark configuration.
 - **Your own columns**: press `C` on any field to add it as a column, or
   `:column http.host Host`. `:columns` opens an editor to reorder, hide,
   rename and delete them, and the arrangement is remembered.
@@ -114,6 +116,8 @@ packetshark --keylog keys.log tls.pcapng      # decrypt TLS
 packetshark -D                                # list capture interfaces
 packetshark                                   # choose an interface from a list
 packetshark -t ad capture.pcapng              # times as date and time of day
+packetshark -d tcp.port==8080,http x.pcapng   # Decode As, as in tshark
+packetshark -C work capture.pcapng            # a Wireshark configuration profile
 packetshark -Y dns capture.pcapng | less      # no terminal: print like tshark
 ```
 
@@ -287,42 +291,44 @@ and a hint:
 
 **Commands**
 
-| Key                       | Action                                                        |
-| ------------------------- | ------------------------------------------------------------- |
-| `:<number>`               | Go to a packet                                                |
-| `:filter <expr>`          | Apply a display filter                                        |
-| `:clear`                  | Clear the display filter                                      |
-| `:conv [proto]`           | Conversations (eth, ipv4, ipv6, tcp, udp)                     |
-| `:endpoints [proto]`      | Endpoints                                                     |
-| `:phs`                    | Protocol hierarchy                                            |
-| `:expert`                 | Expert information                                            |
-| `:graph`                  | Packets over time                                             |
-| `:flow [proto]`           | Flow sequence: who sent what to whom (all, tcp, icmp)         |
-| `:objects [proto]`        | Exportable objects (http, smb, tftp, imf, ...)                |
-| `:stat <name>`            | A protocol's statistics tree (http, http_req, dns, rtsp, ...) |
-| `:follow [proto]`         | Follow the selected packet's stream                           |
-| `:write <file>`           | Save the displayed packets                                    |
-| `:columns`                | Arrange the columns: order, visibility, titles                |
-| `:column <field> [title]` | Add a column showing a field                                  |
-| `:column remove <name>`   | Remove a column by its title or field                         |
-| `:column reset`           | Go back to the Wireshark profile's columns                    |
-| `:marked`                 | Show only marked packets                                      |
-| `:marks`                  | List the marks set with m, and go to one                      |
-| `:unmark`                 | Remove all marks                                              |
-| `:keylog <file>`          | Decrypt TLS with a key log file                               |
-| `:set <pref> <value>`     | Set a Wireshark preference                                    |
-| `:time <format>`          | relative, delta, absolute, date, utc, utc-date, default       |
-| `:map <key> <keys>`       | Make a key type a sequence of keys                            |
-| `:unmap <key>`            | Remove a key mapping (:map lists them)                        |
-| `:theme [name]`           | Choose a colour theme (a list, without a name)                |
-| `:colors <mode>`          | Packet row colours: wireshark, tint, off                      |
-| `:layout <name>`          | stacked, side                                                 |
-| `:open <file>`            | Open another capture                                          |
-| `:recent`                 | Open a capture opened lately                                  |
-| `:info`                   | The capture file's properties: format, size, time span        |
-| `:reload`                 | Reload the capture                                            |
-| `:stop`                   | Stop a live capture                                           |
-| `:quit`                   | Quit                                                          |
+| Key                               | Action                                                            |
+| --------------------------------- | ----------------------------------------------------------------- |
+| `:<number>`                       | Go to a packet                                                    |
+| `:filter <expr>`                  | Apply a display filter                                            |
+| `:clear`                          | Clear the display filter                                          |
+| `:conv [proto]`                   | Conversations (eth, ipv4, ipv6, tcp, udp)                         |
+| `:endpoints [proto]`              | Endpoints                                                         |
+| `:phs`                            | Protocol hierarchy                                                |
+| `:expert`                         | Expert information                                                |
+| `:graph`                          | Packets over time                                                 |
+| `:flow [proto]`                   | Flow sequence: who sent what to whom (all, tcp, icmp)             |
+| `:objects [proto]`                | Exportable objects (http, smb, tftp, imf, ...)                    |
+| `:stat <name>`                    | A protocol's statistics tree (http, http_req, dns, rtsp, ...)     |
+| `:follow [proto]`                 | Follow the selected packet's stream                               |
+| `:write <file>`                   | Save the displayed packets                                        |
+| `:columns`                        | Arrange the columns: order, visibility, titles                    |
+| `:column <field> [title]`         | Add a column showing a field                                      |
+| `:column remove <name>`           | Remove a column by its title or field                             |
+| `:column reset`                   | Go back to the Wireshark profile's columns                        |
+| `:marked`                         | Show only marked packets                                          |
+| `:marks`                          | List the marks set with m, and go to one                          |
+| `:unmark`                         | Remove all marks                                                  |
+| `:keylog <file>`                  | Decrypt TLS with a key log file                                   |
+| `:decode <table> <value> <proto>` | Decode As, e.g. :decode tcp.port 8080 http (:decode clear undoes) |
+| `:profile [name]`                 | Switch Wireshark configuration profile (a list, without a name)   |
+| `:set <pref> <value>`             | Set a Wireshark preference                                        |
+| `:time <format>`                  | relative, delta, absolute, date, utc, utc-date, default           |
+| `:map <key> <keys>`               | Make a key type a sequence of keys                                |
+| `:unmap <key>`                    | Remove a key mapping (:map lists them)                            |
+| `:theme [name]`                   | Choose a colour theme (a list, without a name)                    |
+| `:colors <mode>`                  | Packet row colours: wireshark, tint, off                          |
+| `:layout <name>`                  | stacked, side                                                     |
+| `:open <file>`                    | Open another capture                                              |
+| `:recent`                         | Open a capture opened lately                                      |
+| `:info`                           | The capture file's properties: format, size, time span            |
+| `:reload`                         | Reload the capture                                                |
+| `:stop`                           | Stop a live capture                                               |
+| `:quit`                           | Quit                                                              |
 
 Typing after `/` replaces the current filter; press an arrow key first to
 edit it instead.
@@ -479,10 +485,6 @@ dropped the rest.
   a real interface. TLS decryption is covered only by the optional
   real-capture walk (a capture with embedded secrets), not by the default
   test suite.
-- **"Decode As" comes from your Wireshark profile.** sharkd cannot be told
-  to decode a port as another protocol while it runs. Set the rule up once in
-  Wireshark (Analyze > Decode As, then save), and packetshark applies it; use
-  `-C` if you keep such rules in a separate profile.
 - No packet editing, and no VoIP or RTP analysis yet.
 
 ## Development

@@ -64,6 +64,11 @@ struct Cli {
     #[arg(short = 't', value_name = "FORMAT")]
     time: Option<String>,
 
+    /// Decode As: treat packets whose TABLE value is VALUE as PROTO, e.g.
+    /// -d tcp.port==8080,http (repeat for several)
+    #[arg(short = 'd', value_name = "TABLE==VALUE,PROTO")]
+    decode_as: Vec<String>,
+
     /// Keep reading the file as it grows (for a capture another program is
     /// still writing)
     #[arg(long)]
@@ -242,6 +247,24 @@ fn run(cli: Cli) -> Result<(), String> {
             .into());
     };
 
+    // sharkd simply exits if asked for a profile that does not exist.
+    if let Some(profile) = &config.profile {
+        let tshark = capture::locate_tool("tshark", &sharkd_path);
+        let names =
+            packetshark::wsconfig::profiles(&packetshark::wsconfig::folders(tshark.as_deref()));
+        if !names.iter().any(|n| n == profile) {
+            return Err(format!(
+                "there is no Wireshark profile called {profile}; there are: {}",
+                names.join(", ")
+            ));
+        }
+        if profile == "Default" {
+            config.profile = None;
+        }
+    }
+    for rule in &cli.decode_as {
+        packetshark::wsconfig::DecodeAs::parse(rule).map_err(|e| format!("-d {rule}: {e}"))?;
+    }
     let time_format = match cli.time.as_deref() {
         None => TimeFormat::default(),
         Some(code) => time_format(code)?,
@@ -275,6 +298,7 @@ fn run(cli: Cli) -> Result<(), String> {
     let launch = Launch {
         program: sharkd_path,
         profile: config.profile.clone(),
+        config_dir: None,
     };
     let mouse = config.ui.mouse;
     let (tx, rx) = mpsc::channel();
@@ -287,6 +311,8 @@ fn run(cli: Cli) -> Result<(), String> {
         time_format,
         store: config::Store::standard(),
         themes_dir: config::themes_dir(),
+        wireshark_config: None,
+        decode_as: cli.decode_as.clone(),
     };
     let mut app = App::new(
         launch,
@@ -460,6 +486,9 @@ fn pass_through(cli: &Cli, sharkd: &std::path::Path, profile: Option<&str>) -> R
     }
     for pref in &cli.prefs {
         cmd.arg("-o").arg(pref);
+    }
+    for rule in &cli.decode_as {
+        cmd.arg("-d").arg(rule);
     }
     if let Some(keylog) = &cli.keylog {
         cmd.arg("-o")

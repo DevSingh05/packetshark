@@ -75,6 +75,9 @@ pub struct Launch {
     pub program: PathBuf,
     /// Wireshark configuration profile (`sharkd -C`).
     pub profile: Option<String>,
+    /// A configuration directory to use in place of the user's own
+    /// (`WIRESHARK_CONFIG_DIR`).
+    pub config_dir: Option<PathBuf>,
 }
 
 impl Launch {
@@ -82,6 +85,7 @@ impl Launch {
         Launch {
             program: program.into(),
             profile: None,
+            config_dir: None,
         }
     }
 }
@@ -96,10 +100,21 @@ pub struct Client {
 impl Client {
     pub fn spawn(launch: &Launch) -> io::Result<Client> {
         let mut cmd = Command::new(&launch.program);
-        if let Some(profile) = &launch.profile {
-            cmd.arg("-C").arg(profile);
+        // sharkd talks on its console either when told to with `-` or when
+        // given no socket to listen on. The two cannot be combined: with a
+        // profile, `-` after it is refused and `-` before it makes sharkd
+        // ignore the profile. So it is one or the other.
+        match &launch.profile {
+            Some(profile) => {
+                cmd.arg("-C").arg(profile);
+            }
+            None => {
+                cmd.arg("-");
+            }
         }
-        cmd.arg("-");
+        if let Some(dir) = &launch.config_dir {
+            cmd.env("WIRESHARK_CONFIG_DIR", dir);
+        }
         // sharkd logs progress to stderr; it would corrupt the screen.
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())

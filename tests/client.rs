@@ -226,3 +226,33 @@ fn dropping_the_worker_does_not_wait_for_a_slow_request() {
 fn a_missing_binary_is_an_error_not_a_panic() {
     assert!(Client::spawn(&Launch::new("/definitely/not/sharkd")).is_err());
 }
+
+#[test]
+fn a_profile_given_at_startup_is_in_force() {
+    let Some(sharkd) = sharkd_path() else { return };
+    // A configuration whose one profile colours every packet red.
+    let config = tempfile::tempdir().unwrap();
+    let loud = config.path().join("profiles").join("loud");
+    std::fs::create_dir_all(&loud).unwrap();
+    std::fs::write(
+        loud.join("colorfilters"),
+        "@Everything@frame@[65535,0,0][0,0,0]\n",
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("t.pcap");
+    pcap::web().write(&path);
+    let first_row_colour = |profile: Option<&str>| {
+        let launch = Launch {
+            program: sharkd.clone(),
+            profile: profile.map(str::to_string),
+            config_dir: Some(config.path().to_path_buf()),
+        };
+        let mut c = Client::spawn(&launch).unwrap();
+        let _: LoadResult = c.call("load", json!({ "file": path })).unwrap();
+        let rows: Vec<FrameRow> = c.call("frames", json!({ "limit": 1 })).unwrap();
+        rows[0].bg.clone()
+    };
+    assert_eq!(first_row_colour(Some("loud")).as_deref(), Some("ff0000"));
+    assert_ne!(first_row_colour(None).as_deref(), Some("ff0000"));
+}

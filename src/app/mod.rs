@@ -50,6 +50,13 @@ pub enum Event {
     /// Fires a few times a second; drives the spinner and live reloads.
     Tick,
     Reply(Reply),
+    /// An answer from the sharkd that was started as engine number `engine`.
+    /// Starting sharkd afresh makes a new engine; answers still on their way
+    /// from an earlier one are recognised by their number and dropped.
+    Engine {
+        engine: u64,
+        reply: Reply,
+    },
     /// A background job (such as an export) finished.
     Job {
         ok: bool,
@@ -287,6 +294,10 @@ pub struct Options {
     pub store: Store,
     /// Where the user's own themes are.
     pub themes_dir: Option<PathBuf>,
+    /// A Wireshark configuration directory to use in place of the user's.
+    pub wireshark_config: Option<PathBuf>,
+    /// Decode As rules to start with, as typed (`tcp.port==8080,http`).
+    pub decode_as: Vec<String>,
 }
 
 pub struct App {
@@ -365,6 +376,23 @@ pub struct App {
     jump_back: Option<u32>,
     /// A packet to go to once the capture being opened has loaded.
     after_open_goto: Option<u32>,
+    /// Wireshark preferences set at startup or since, to set again if
+    /// sharkd is started afresh.
+    prefs: Vec<(String, String)>,
+    /// Which sharkd is in use, counting from the first; see `Event::Engine`.
+    engine: u64,
+    /// "Decode As" rules added while running.
+    pub decode_as: Vec<crate::wsconfig::DecodeAs>,
+    /// The copy of the Wireshark configuration that holds those rules.
+    engine_dir: Option<tempfile::TempDir>,
+    /// Where Wireshark's configuration is, once looked up.
+    folders: Option<crate::wsconfig::Folders>,
+    /// A configuration directory given to us in place of the user's own.
+    given_personal: Option<PathBuf>,
+    /// Whether one was.
+    given_config: bool,
+    /// Wireshark's protocols by name, once asked for.
+    protocols: Option<Vec<crate::wsconfig::Protocol>>,
     /// Key mappings, read from the remembered ones: a key and what it
     /// stands for.
     maps: Vec<(KeyEvent, Vec<KeyEvent>)>,
@@ -394,10 +422,32 @@ impl App {
         events: Sender<Event>,
         history: History,
     ) -> std::io::Result<App> {
+        let mut launch = launch;
+        if let Some(dir) = &options.wireshark_config {
+            launch.config_dir = Some(dir.clone());
+        }
+        // A profile that Wireshark installs for all users has to be copied
+        // in as a personal one before sharkd will start with it.
+        let mut engine_dir = None;
+        let mut folders = None;
+        if launch.profile.is_some() {
+            let tshark = crate::capture::locate_tool("tshark", &launch.program);
+            let mut found = crate::wsconfig::folders(tshark.as_deref());
+            if let Some(given) = &options.wireshark_config {
+                found.personal = Some(given.clone());
+            }
+            if let Ok(Some(copy)) =
+                crate::wsconfig::engine_config(&found, launch.profile.as_deref(), &[])
+            {
+                launch.config_dir = Some(copy.path().to_path_buf());
+                engine_dir = Some(copy);
+            }
+            folders = Some(found);
+        }
         let tx = events.clone();
         let wireshark = crate::sharkd::version(&launch.program);
         let worker = Worker::start(launch.clone(), move |reply| {
-            let _ = tx.send(Event::Reply(reply));
+            let _ = tx.send(Event::Engine { engine: 0, reply });
         })?;
 
         if let Some(mode) = RowColors::parse(&config.ui.row_colors) {
@@ -468,6 +518,14 @@ impl App {
             local_marks: std::collections::BTreeMap::new(),
             jump_back: None,
             after_open_goto: None,
+            prefs: options.prefs.clone(),
+            engine: 0,
+            decode_as: Vec::new(),
+            engine_dir,
+            folders,
+            given_personal: options.wireshark_config.clone(),
+            given_config: options.wireshark_config.is_some(),
+            protocols: None,
             maps: Vec::new(),
             replaying: false,
             state: options.store.load(),
@@ -482,6 +540,11 @@ impl App {
         };
 
         app.load_maps();
+        // Decode As rules given at startup. They are in force before the
+        // capture is first read: this replaces the sharkd just started.
+        if !options.decode_as.is_empty() {
+            app.start_with_decode_as(&options.decode_as);
+        }
         // The theme last chosen with `:theme`, else the one in the config.
         if let Some(name) = app
             .state
@@ -588,6 +651,11 @@ impl App {
             Event::Resize => {}
             Event::Tick => self.on_tick(),
             Event::Reply(reply) => self.on_reply(reply),
+            Event::Engine { engine, reply } => {
+                if engine == self.engine {
+                    self.on_reply(reply);
+                }
+            }
             Event::Job { ok, message } => {
                 self.say(if ok { Level::Info } else { Level::Error }, message);
             }
@@ -1825,6 +1893,251 @@ impl App {
             Action::Stats(kind) => self.open_stats(kind, None),
             Action::Command(line) => self.run_command(&line),
         }
+    }
+
+    // ---- the engine --------------------------------------------------------
+
+    /// Set a Wireshark preference now, and again if sharkd is restarted.
+    pub(super) fn set_preference(&mut self, name: &str, value: &str) {
+        self.prefs.retain(|(n, _)| n != name);
+        self.prefs.push((name.to_string(), value.to_string()));
+        self.send(Request::SetConf {
+            name: name.to_string(),
+            value: value.to_string(),
+        });
+    }
+
+    /// Start a fresh sharkd as `launch` describes and open the capture in
+    /// it again. What sharkd reads only at startup (the profile, Decode As
+    /// rules) can be changed no other way.
+    fn restart_engine(&mut self, launch: Launch) -> Result<(), String> {
+        let tx = self.events.clone();
+        let engine = self.engine + 1;
+        let worker = Worker::start(launch.clone(), move |reply| {
+            let _ = tx.send(Event::Engine { engine, reply });
+        })
+        .map_err(|e| format!("could not start sharkd: {e}"))?;
+        // The old worker stops, and its sharkd with it, as it is dropped.
+        // Whatever it had still to say is told apart by its number.
+        self.worker = worker;
+        self.engine = engine;
+        self.launch = launch;
+        self.inflight = 0;
+        self.info = None;
+        self.status = None;
+        self.load = LoadState::Loading;
+        self.list.reset();
+        self.detail = None;
+        self.detail_requested = None;
+        self.find = None;
+        self.reveal = None;
+        self.overlay = None;
+        self.send(Request::Info);
+        for (name, value) in self.prefs.clone() {
+            self.send(Request::SetConf { name, value });
+        }
+        if !self.filter.applied.is_empty()
+            && let Some((seq, filter)) = self.filter.check_request()
+        {
+            self.send(Request::Check { seq, filter });
+        }
+        if let Some(tail) = &mut self.tail {
+            // A capture still being written loads when next looked at.
+            tail.size = 0;
+            tail.loading = false;
+        } else {
+            let path = self.source.clone();
+            self.send(Request::Load { path });
+        }
+        Ok(())
+    }
+
+    /// Where Wireshark's configuration is: the user's own directory, or
+    /// the one given to us in its place, and the one shared by all users.
+    fn wireshark_folders(&mut self) -> crate::wsconfig::Folders {
+        if self.folders.is_none() {
+            let tshark = crate::capture::locate_tool("tshark", self.sharkd_path());
+            let mut folders = crate::wsconfig::folders(tshark.as_deref());
+            if let Some(given) = &self.given_personal {
+                folders.personal = Some(given.clone());
+            }
+            self.folders = Some(folders);
+        }
+        self.folders.clone().unwrap_or_default()
+    }
+
+    /// The configuration profiles that can be switched to.
+    pub fn profile_names(&mut self) -> Vec<String> {
+        crate::wsconfig::profiles(&self.wireshark_folders())
+    }
+
+    /// The profile in use.
+    pub fn profile(&self) -> &str {
+        self.launch.profile.as_deref().unwrap_or("Default")
+    }
+
+    /// Switch to another Wireshark configuration profile: its columns,
+    /// colouring rules, preferences and Decode As rules.
+    pub(super) fn use_profile(&mut self, name: &str) {
+        let names = self.profile_names();
+        let Some(name) = names.iter().find(|n| n.eq_ignore_ascii_case(name)).cloned() else {
+            return self.error(format!(
+                "There is no Wireshark profile called {name}. There are: {}.",
+                names.join(", ")
+            ));
+        };
+        let mut launch = self.launch.clone();
+        launch.profile = (name != "Default").then(|| name.clone());
+        // Rules added here go with the profile that is in use.
+        if let Err(e) = self.prepare_engine_dir(&mut launch) {
+            return self.error(e);
+        }
+        match self.restart_engine(launch) {
+            Ok(()) => self.info(format!("Profile: {name}.")),
+            Err(e) => self.error(e),
+        }
+    }
+
+    pub(super) fn profile_menu(&mut self) {
+        let current = self.profile().to_string();
+        let keys = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let items = self
+            .profile_names()
+            .iter()
+            .zip(keys.chars())
+            .map(|(name, key)| MenuItem {
+                key,
+                label: if *name == current {
+                    format!("{name}  (in use)")
+                } else {
+                    name.clone()
+                },
+                action: Action::Command(format!("profile {name}")),
+            })
+            .collect();
+        self.open_menu("Wireshark profile", items);
+    }
+
+    /// Point `launch` at a configuration in which its profile and the
+    /// Decode As rules are in force: a copy of the user's if that is what it
+    /// takes, else the user's own.
+    fn prepare_engine_dir(&mut self, launch: &mut Launch) -> Result<(), String> {
+        let folders = self.wireshark_folders();
+        let copy =
+            crate::wsconfig::engine_config(&folders, launch.profile.as_deref(), &self.decode_as)?;
+        launch.config_dir = match &copy {
+            Some(dir) => Some(dir.path().to_path_buf()),
+            // A configuration given to us has to be named; the user's own
+            // sharkd finds by itself.
+            None => folders.personal.filter(|_| self.given_config),
+        };
+        // The previous copy goes when this replaces it.
+        self.engine_dir = copy;
+        Ok(())
+    }
+
+    /// Add a Decode As rule and dissect the capture again with it.
+    pub(super) fn decode_as(&mut self, text: &str) {
+        let (table, value, typed) = match crate::wsconfig::DecodeAs::parse(text) {
+            Ok(parts) => parts,
+            Err(e) => return self.error(e),
+        };
+        if self.protocols.is_none() {
+            let tshark = crate::capture::locate_tool("tshark", self.sharkd_path());
+            self.protocols = Some(crate::wsconfig::protocols(tshark.as_deref()));
+        }
+        let known = self.protocols.as_deref().unwrap_or_default();
+        let protocol = match crate::wsconfig::short_name(known, &typed) {
+            Ok(name) => name,
+            Err(e) => return self.error(e),
+        };
+        // A new rule for the same table and value replaces the old one.
+        self.decode_as
+            .retain(|r| !(r.table == table && r.value == value));
+        self.decode_as.push(crate::wsconfig::DecodeAs {
+            table: table.clone(),
+            value: value.clone(),
+            protocol: protocol.clone(),
+        });
+        self.apply_decode_as(format!("Decoding {table} {value} as {protocol}."));
+    }
+
+    /// Take the rules given on the command line and start sharkd with them.
+    fn start_with_decode_as(&mut self, rules: &[String]) {
+        let tshark = crate::capture::locate_tool("tshark", self.sharkd_path());
+        let known = crate::wsconfig::protocols(tshark.as_deref());
+        for text in rules {
+            let rule = crate::wsconfig::DecodeAs::parse(text).and_then(|(table, value, typed)| {
+                Ok(crate::wsconfig::DecodeAs {
+                    table,
+                    value,
+                    protocol: crate::wsconfig::short_name(&known, &typed)?,
+                })
+            });
+            match rule {
+                Ok(rule) => self.decode_as.push(rule),
+                Err(e) => self.error(format!("-d {text}: {e}")),
+            }
+        }
+        self.protocols = Some(known);
+        if !self.decode_as.is_empty() {
+            let mut launch = self.launch.clone();
+            if let Err(e) = self.prepare_engine_dir(&mut launch) {
+                return self.error(e);
+            }
+            let tx = self.events.clone();
+            let engine = self.engine + 1;
+            match Worker::start(launch.clone(), move |reply| {
+                let _ = tx.send(Event::Engine { engine, reply });
+            }) {
+                Ok(worker) => {
+                    // Nothing has been asked of the first sharkd yet.
+                    self.worker = worker;
+                    self.engine = engine;
+                    self.launch = launch;
+                }
+                Err(e) => self.error(format!("could not start sharkd: {e}")),
+            }
+        }
+    }
+
+    /// Drop the Decode As rules added here.
+    pub(super) fn clear_decode_as(&mut self) {
+        if self.decode_as.is_empty() {
+            return self.info("No Decode As rules have been added here.");
+        }
+        self.decode_as.clear();
+        self.apply_decode_as("Decode As rules added here are gone.".to_string());
+    }
+
+    fn apply_decode_as(&mut self, done: String) {
+        let mut launch = self.launch.clone();
+        let outcome = self
+            .prepare_engine_dir(&mut launch)
+            .and_then(|()| self.restart_engine(launch));
+        match outcome {
+            Ok(()) => self.info(done),
+            Err(e) => self.error(e),
+        }
+    }
+
+    pub(super) fn decode_as_menu(&mut self) {
+        if self.decode_as.is_empty() {
+            return self.info(
+                "Usage: :decode <table> <value> <protocol>, e.g. :decode tcp.port 8080 http",
+            );
+        }
+        let lines: Vec<String> = self
+            .decode_as
+            .iter()
+            .map(|r| format!("{} {}  as  {}", r.table, r.value, r.protocol))
+            .chain(["".to_string(), ":decode clear removes them.".to_string()])
+            .collect();
+        self.overlay = Some(Overlay::Text {
+            title: "Decode As rules added here".to_string(),
+            lines,
+            top: 0,
+        });
     }
 
     // ---- packets over time -----------------------------------------------

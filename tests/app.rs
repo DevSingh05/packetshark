@@ -3138,3 +3138,179 @@ fn a_range_of_bytes_can_be_selected_and_copied() {
     h.assert_screen_contains("Hex dump");
     h.assert_screen_lacks("selected byte");
 }
+
+/// Syslog messages on a port Wireshark does not know to be syslog.
+fn syslog_on_an_odd_port() -> pcap::Pcap {
+    let mut capture = pcap::Pcap::new();
+    for i in 0..4 {
+        let message = format!("<34>Oct 11 22:14:15 host app: message {i}");
+        capture.udp(true, pcap::SERVER, 40000 + i, 7777, message.as_bytes());
+    }
+    capture
+}
+
+#[test]
+fn decode_as_rules_can_be_added_while_running() {
+    let config = tempfile::tempdir().unwrap();
+    let options = Options {
+        wireshark_config: Some(config.path().to_path_buf()),
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::open_with(&syslog_on_an_odd_port(), 100, 30, options) else {
+        return;
+    };
+    let protocol = |h: &mut Harness| h.line(3);
+    // Whatever Wireshark makes of this port by itself, it is not syslog.
+    assert!(
+        !protocol(&mut h).contains(" Syslog "),
+        "{}",
+        protocol(&mut h)
+    );
+    h.keys("/udp.port == 7777\n");
+    h.keys("jj");
+
+    // The protocol is given by the name used in filters; Wireshark's own
+    // spelling of it is found for the rule.
+    h.keys(":decode udp.port 7777 syslog\n");
+    assert!(
+        protocol(&mut h).contains(" Syslog "),
+        "{}",
+        protocol(&mut h)
+    );
+    h.assert_screen_contains("AUTH.CRIT");
+    assert_eq!(
+        h.app.filter.applied, "udp.port == 7777",
+        "the filter survives"
+    );
+    assert_eq!(h.app.decode_as.len(), 1);
+    assert_eq!(h.app.decode_as[0].protocol, "Syslog");
+    // The fields of the new dissection can be filtered on.
+    h.keys("/syslog.level == 2\n");
+    assert_eq!(h.app.list.total, Some(4));
+
+    // tshark's way of writing a rule works as well, and a rule for the same
+    // port replaces the one before it.
+    h.keys(":decode udp.port==7777,dns\n");
+    assert_eq!(h.app.decode_as.len(), 1);
+    assert_eq!(h.app.decode_as[0].protocol, "DNS");
+    h.keys("x");
+    assert!(
+        !protocol(&mut h).contains(" Syslog "),
+        "{}",
+        protocol(&mut h)
+    );
+
+    // The rules in force, and taking them away.
+    h.keys(":decode udp.port 7777 syslog\n");
+    h.keys(":decode\n");
+    h.assert_screen_contains("Decode As rules added here");
+    h.assert_screen_contains("udp.port 7777  as  Syslog");
+    h.key(KeyCode::Esc);
+    h.keys(":decode clear\n");
+    assert!(h.app.decode_as.is_empty());
+    assert!(
+        !protocol(&mut h).contains(" Syslog "),
+        "{}",
+        protocol(&mut h)
+    );
+
+    // Mistakes say what is wrong and change nothing.
+    h.keys(":decode udp.port 7777 nosuchprotocol\n");
+    assert!(
+        h.message().contains("no protocol called nosuchprotocol"),
+        "{}",
+        h.message()
+    );
+    h.keys(":decode udp.port 7777\n");
+    assert!(
+        h.message().contains("a table, a value and a protocol"),
+        "{}",
+        h.message()
+    );
+    assert!(h.app.decode_as.is_empty());
+    // The configuration given to us was only read, never written.
+    assert!(!config.path().join("decode_as_entries").exists());
+}
+
+#[test]
+fn decode_as_rules_can_be_given_at_startup() {
+    let config = tempfile::tempdir().unwrap();
+    let options = Options {
+        wireshark_config: Some(config.path().to_path_buf()),
+        decode_as: vec!["udp.port==7777,syslog".to_string()],
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::open_with(&syslog_on_an_odd_port(), 100, 30, options) else {
+        return;
+    };
+    assert!(h.line(3).contains(" Syslog "), "{}", h.line(3));
+    assert_eq!(h.app.decode_as.len(), 1);
+}
+
+#[test]
+fn the_wireshark_profile_can_be_switched_while_running() {
+    // A configuration with a second profile whose colouring rules paint
+    // every packet red, so that the switch can be seen.
+    let config = tempfile::tempdir().unwrap();
+    let loud = config.path().join("profiles").join("loud");
+    std::fs::create_dir_all(&loud).unwrap();
+    std::fs::write(
+        loud.join("colorfilters"),
+        "@Everything@frame@[65535,0,0][0,0,0]\n",
+    )
+    .unwrap();
+    let options = Options {
+        wireshark_config: Some(config.path().to_path_buf()),
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::open_with(&pcap::web(), 100, 30, options) else {
+        return;
+    };
+    let red = Some(Color::Rgb(255, 0, 0));
+    assert_eq!(h.app.profile(), "Default");
+    assert_ne!(h.bg_at(40, 4), red);
+    h.keys("/tcp\n");
+    h.keys("jjj");
+    let selected = h.app.list.selected_num();
+
+    // The list of profiles marks the one in use.
+    h.keys(":profile\n");
+    h.assert_screen_contains("Wireshark profile");
+    h.assert_screen_contains("Default  (in use)");
+    h.assert_screen_contains("loud");
+    h.keys("b");
+    assert_eq!(h.app.profile(), "loud");
+    assert!(h.message().contains("Profile: loud"), "{}", h.message());
+    assert_eq!(
+        h.bg_at(40, 4),
+        red,
+        "the profile's colouring rules are in force"
+    );
+    assert_eq!(h.app.filter.applied, "tcp", "the filter is kept");
+    assert_eq!(h.app.list.total, Some(18));
+    assert!(selected.is_some());
+
+    // Back again by name, in any case; and a name that is not a profile.
+    h.keys(":profile default\n");
+    assert_eq!(h.app.profile(), "Default");
+    assert_ne!(h.bg_at(40, 4), red);
+    h.keys(":profile nosuch\n");
+    assert!(
+        h.message().contains("no Wireshark profile called nosuch"),
+        "{}",
+        h.message()
+    );
+    assert!(
+        h.message().contains("loud"),
+        "the ones there are get listed: {}",
+        h.message()
+    );
+    assert_eq!(h.app.profile(), "Default");
+
+    // A Decode As rule added here stays in force across a profile switch.
+    h.keys(":decode tcp.port 80 dns\n");
+    h.keys(":profile loud\n");
+    assert_eq!(h.app.decode_as.len(), 1);
+    assert_eq!(h.bg_at(40, 4), red);
+    h.assert_screen_lacks("HTTP/1.1 200 OK");
+}

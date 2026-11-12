@@ -29,6 +29,11 @@ pub const COMMANDS: &[Command] = &[
     cmd("column", "<field> [title]", "Add a column showing a field"),
     cmd("columns", "", "Arrange the columns"),
     cmd("conv", "[proto]", "Conversations"),
+    cmd(
+        "decode",
+        "<table> <value> <proto>",
+        "Decode As, e.g. tcp.port 8080 http",
+    ),
     cmd("endpoints", "[proto]", "Endpoints"),
     cmd("expert", "", "Expert information"),
     cmd("filter", "<expr>", "Apply a display filter"),
@@ -50,6 +55,11 @@ pub const COMMANDS: &[Command] = &[
     cmd("objects", "[proto]", "Export objects"),
     cmd("open", "<file>", "Open another capture"),
     cmd("phs", "", "Protocol hierarchy"),
+    cmd(
+        "profile",
+        "[name]",
+        "Switch Wireshark configuration profile",
+    ),
     cmd("quit", "", "Quit"),
     cmd("recent", "", "Open a capture opened lately"),
     cmd("reload", "", "Reload the capture"),
@@ -112,7 +122,7 @@ const MAX: usize = 200;
 impl App {
     /// What could complete the word that ends `before`, the command line up
     /// to the cursor.
-    pub(super) fn command_candidates(&self, before: &str) -> Candidates {
+    pub(super) fn command_candidates(&mut self, before: &str) -> Candidates {
         let word_at = before
             .char_indices()
             .rev()
@@ -139,6 +149,14 @@ impl App {
                 .into_iter()
                 .map(Candidate::plain)
                 .collect(),
+            ["profile" | "profiles"] => self
+                .profile_names()
+                .into_iter()
+                .map(Candidate::plain)
+                .collect(),
+            ["decode" | "decode-as"] => {
+                fixed(&["clear", "tcp.port", "udp.port", "ethertype", "ip.proto"])
+            }
             ["colors" | "colours"] => fixed(&["wireshark", "tint", "off"]),
             ["layout"] => fixed(&["stacked", "side"]),
             ["time"] => fixed(&[
