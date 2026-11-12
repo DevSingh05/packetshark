@@ -314,7 +314,12 @@ dropped the rest.
   a real interface. TLS decryption is covered only by the optional
   real-capture walk (a capture with embedded secrets), not by the default
   test suite.
-- No packet editing, no I/O graphs, no VoIP or RTP analysis yet.
+- **"Decode As" comes from your Wireshark profile.** sharkd cannot be told
+  to decode a port as another protocol while it runs. Set the rule up once in
+  Wireshark (Analyze > Decode As, then save), and packetshark applies it; use
+  `-C` if you keep such rules in a separate profile.
+- No packet editing, no I/O graphs, no call-flow diagrams, no VoIP or RTP
+  analysis yet.
 
 ## Development
 
