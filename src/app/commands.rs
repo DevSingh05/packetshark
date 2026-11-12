@@ -51,6 +51,35 @@ impl App {
             "follow" => self.follow_selected(some(arg).as_deref()),
             "w" | "write" | "export" | "save" => self.export(arg),
             "marked" => self.show_marked(),
+            "column" | "columns" | "col" => {
+                let (verb, rest) = match arg.split_once(char::is_whitespace) {
+                    Some((v, r)) => (v, r.trim()),
+                    None => (arg, ""),
+                };
+                match verb {
+                    "" => {
+                        if self.extra_columns.is_empty() {
+                            self.info(
+                                "Usage: :column <field> [title] | :column remove [name] (or C on a field)",
+                            );
+                        } else {
+                            let names: Vec<&str> =
+                                self.extra_columns.iter().map(|(t, _)| t.as_str()).collect();
+                            self.info(format!("Added columns: {}", names.join(", ")));
+                        }
+                    }
+                    "remove" | "rm" | "del" | "delete" => self.remove_column(rest),
+                    "reset" | "clear" => self.remove_column(""),
+                    "add" => {
+                        let (field, title) = match rest.split_once(char::is_whitespace) {
+                            Some((f, t)) => (f, Some(t)),
+                            None => (rest, None),
+                        };
+                        self.add_column(field, title);
+                    }
+                    field => self.add_column(field, some(rest).as_deref()),
+                }
+            }
             "unmark" => {
                 let n = self.marks.len();
                 self.marks.clear();

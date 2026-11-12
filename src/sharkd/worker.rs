@@ -76,6 +76,8 @@ pub enum Request {
     },
     /// Validate a display filter.
     Check { seq: u64, filter: String },
+    /// Ask whether `field` is a field Wireshark knows, for a new column.
+    CheckField { title: String, field: String },
     /// Complete a field name.
     Complete { seq: u64, prefix: String },
     /// Reassemble a stream.
@@ -123,6 +125,11 @@ pub enum Reply {
     Check {
         seq: u64,
         filter: String,
+        result: Result<(), String>,
+    },
+    FieldChecked {
+        title: String,
+        field: String,
         result: Result<(), String>,
     },
     Complete {
@@ -425,6 +432,18 @@ impl Runner {
                     result,
                 }
             }
+            Request::CheckField { title, field } => {
+                let result = soft(
+                    self.client
+                        .call::<Value>("check", json!({ "field": field })),
+                )?
+                .map(|_| ());
+                Reply::FieldChecked {
+                    title,
+                    field,
+                    result,
+                }
+            }
             Request::Complete { seq, prefix } => {
                 let result = soft(
                     self.client
@@ -638,6 +657,11 @@ fn failure(request: Request, reason: String) -> Reply {
         Request::Check { seq, filter } => Reply::Check {
             seq,
             filter,
+            result: Err(reason),
+        },
+        Request::CheckField { title, field } => Reply::FieldChecked {
+            title,
+            field,
             result: Err(reason),
         },
         Request::Complete { seq, prefix } => Reply::Complete {

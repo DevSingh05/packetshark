@@ -8,32 +8,7 @@ packetshark does no dissection of its own. It drives **sharkd**, the JSON-RPC
 daemon that ships with Wireshark, so every protocol, display filter, colouring
 rule and preference Wireshark has works here, with the same results.
 
-```
- Filter:  none — press / to filter
- Packets                                                                                     11 packets
-  No. Time      Source        Destination   Protocol Length Info
-    1 0.000000  10.0.0.2      8.8.8.8       DNS          71 Standard query 0x1234 A example.com
-    2 0.012300  8.8.8.8       10.0.0.2      DNS          87 Standard query response 0x1234 A example.co…
-    3 0.024600  10.0.0.2      93.184.216.34 TCP          54 40000 → 80 [SYN] Seq=0 Win=65535 Len=0
-    4 0.036900  93.184.216.34 10.0.0.2      TCP          54 80 → 40000 [SYN, ACK] Seq=0 Ack=1 Win=65535…
-    5 0.049200  10.0.0.2      93.184.216.34 TCP          54 40000 → 80 [ACK] Seq=1 Ack=1 Win=65535 Len=0
-    6 0.061500  10.0.0.2      93.184.216.34 HTTP        129 GET /index.html HTTP/1.1
-    7 0.073800  93.184.216.34 10.0.0.2      TCP          54 80 → 40000 [ACK] Seq=1 Ack=76 Win=65535 Len…
-    8 0.086100  93.184.216.34 10.0.0.2      HTTP        155 HTTP/1.1 200 OK  (text/html)
- Details                                                                                       packet 6
-▸ Internet Protocol Version 4, Src: 10.0.0.2, Dst: 93.184.216.34
-▾ Transmission Control Protocol, Src Port: 40000, Dst Port: 80, Seq: 1, Ack: 1, Len: 75
-    Source Port: 40000
-    Destination Port: 80
-    Stream index: 0
-  ▸ Flags: 0x018 (PSH, ACK)
- Bytes                                                                                Frame (129 bytes)
-0000  aa bb cc dd ee 02 aa bb  cc dd ee 01 08 00 45 00  ..............E.
-0010  00 73 00 01 40 00 40 06  fa a7 0a 00 00 02 5d b8  .s..@.@.......].
-0020  d8 22 9c 40 00 50 00 00  03 e9 00 00 13 89 50 18  .".@.P........P.
-0030  ff ff aa d1 00 00 47 45  54 20 2f 69 6e 64 65 78  ......GET /index
-   t.pcap │ 1.0 kB · 0.1s · packet 6                                                             ? help
-```
+![packetshark showing a TLS session it has decrypted: the packet list, the HTTP header selected in the details tree, and its bytes highlighted in the hex view](docs/screenshot.png)
 
 ## What it does
 
@@ -56,7 +31,12 @@ rule and preference Wireshark has works here, with the same results.
   file that another program is still writing.
 - **Your Wireshark profile**: columns, colouring rules and preferences are
   picked up as they are; `-C` selects another profile.
-- Mouse support, two layouts, zoom, and a `?` key that lists everything.
+- **Columns on the fly**: press `C` on any field to add it as a column, or
+  `:column http.host Host`.
+- Mouse support, two layouts, zoom, and a `?` key that lists everything; the
+  status bar shows the keys that matter where you are.
+- **Works on plain terminals**: ASCII drawing when the locale is not UTF-8,
+  no colour when `NO_COLOR` is set, light and dark backgrounds.
 
 ## Install
 
@@ -156,6 +136,7 @@ and a hint:
 | `*`            | Expand everything under the field                      |
 | `e`            | Expand or collapse the whole tree                      |
 | `a`            | Apply the field as a filter                            |
+| `C`            | Add the field as a column in the packet list           |
 | `p`            | Prepare a filter from the field (edit before applying) |
 | `y`            | Copy the field (value, filter, bytes, ...)             |
 
@@ -199,30 +180,32 @@ and a hint:
 
 **Commands**
 
-| Key                   | Action                                                        |
-| --------------------- | ------------------------------------------------------------- |
-| `:<number>`           | Go to a packet                                                |
-| `:filter <expr>`      | Apply a display filter                                        |
-| `:clear`              | Clear the display filter                                      |
-| `:conv [proto]`       | Conversations (eth, ipv4, ipv6, tcp, udp)                     |
-| `:endpoints [proto]`  | Endpoints                                                     |
-| `:phs`                | Protocol hierarchy                                            |
-| `:expert`             | Expert information                                            |
-| `:objects [proto]`    | Exportable objects (http, smb, tftp, imf, ...)                |
-| `:stat <name>`        | A protocol's statistics tree (http, http_req, dns, rtsp, ...) |
-| `:follow [proto]`     | Follow the selected packet's stream                           |
-| `:write <file>`       | Save the displayed packets                                    |
-| `:marked`             | Show only marked packets                                      |
-| `:unmark`             | Remove all marks                                              |
-| `:keylog <file>`      | Decrypt TLS with a key log file                               |
-| `:set <pref> <value>` | Set a Wireshark preference                                    |
-| `:time <format>`      | relative, delta, absolute, date, utc, utc-date, default       |
-| `:colors <mode>`      | wireshark, tint, off                                          |
-| `:layout <name>`      | stacked, side                                                 |
-| `:open <file>`        | Open another capture                                          |
-| `:reload`             | Reload the capture                                            |
-| `:stop`               | Stop a live capture                                           |
-| `:quit`               | Quit                                                          |
+| Key                       | Action                                                        |
+| ------------------------- | ------------------------------------------------------------- |
+| `:<number>`               | Go to a packet                                                |
+| `:filter <expr>`          | Apply a display filter                                        |
+| `:clear`                  | Clear the display filter                                      |
+| `:conv [proto]`           | Conversations (eth, ipv4, ipv6, tcp, udp)                     |
+| `:endpoints [proto]`      | Endpoints                                                     |
+| `:phs`                    | Protocol hierarchy                                            |
+| `:expert`                 | Expert information                                            |
+| `:objects [proto]`        | Exportable objects (http, smb, tftp, imf, ...)                |
+| `:stat <name>`            | A protocol's statistics tree (http, http_req, dns, rtsp, ...) |
+| `:follow [proto]`         | Follow the selected packet's stream                           |
+| `:write <file>`           | Save the displayed packets                                    |
+| `:column <field> [title]` | Add a column showing a field                                  |
+| `:column remove [name]`   | Remove an added column (all, without a name)                  |
+| `:marked`                 | Show only marked packets                                      |
+| `:unmark`                 | Remove all marks                                              |
+| `:keylog <file>`          | Decrypt TLS with a key log file                               |
+| `:set <pref> <value>`     | Set a Wireshark preference                                    |
+| `:time <format>`          | relative, delta, absolute, date, utc, utc-date, default       |
+| `:colors <mode>`          | wireshark, tint, off                                          |
+| `:layout <name>`          | stacked, side                                                 |
+| `:open <file>`            | Open another capture                                          |
+| `:reload`                 | Reload the capture                                            |
+| `:stop`                   | Stop a live capture                                           |
+| `:quit`                   | Quit                                                          |
 
 Typing after `/` replaces the current filter; press an arrow key first to
 edit it instead.
@@ -243,6 +226,7 @@ layout = "stacked"         # stacked | side
 background = "auto"        # dark | light | auto (used by "tint")
 mouse = true
 expand_all = false         # start with the details tree fully open
+ascii = false              # draw with ASCII only (automatic without UTF-8)
 ```
 
 Recent filters are remembered in `~/.local/state/packetshark/filters`.
@@ -250,6 +234,12 @@ Recent filters are remembered in `~/.local/state/packetshark/filters`.
 Row colours: `wireshark` paints rows with your colouring rules as the GUI
 does. If that clashes with your terminal theme, `tint` colours only the text
 and `off` uses none. `c` cycles through them.
+
+Terminals: the interface uses your terminal's own colours for its accents, so
+it follows your theme. Set `background = "light"` if a light terminal is not
+detected. With a locale that is not UTF-8 (or `--ascii`) it draws with ASCII
+characters only, and with [`NO_COLOR`](https://no-color.org) set it uses
+bold, dim and reverse video instead of colour.
 
 ## Performance
 
@@ -306,11 +296,14 @@ dropped the rest.
   has no incremental load. That is fine for minutes of ordinary traffic and
   gets slower as a capture reaches hundreds of megabytes. For long sessions,
   capture to a file and open it afterwards.
-- **Unix only so far.** It is developed and tested on macOS. Linux should
-  work but has not been run. Windows is untested, and Wireshark's Windows
-  installer does not include sharkd.
-- **Tested against Wireshark 4.6 only.** Other versions that have sharkd
-  should work, with fewer features where sharkd offers less.
+- **Unix only so far.** It is developed on macOS and tested on macOS and
+  Linux. Windows is untested, and Wireshark's Windows installer does not
+  include sharkd.
+- **Tested against Wireshark 4.6** (4.6.4 on Linux, 4.6.9 on macOS). Other
+  versions that have sharkd should work, with fewer features where sharkd
+  offers less.
+- **Added columns last for the session.** Columns you want every time belong
+  in your Wireshark profile, which packetshark reads.
 - Live capture was verified with a scripted stand-in for dumpcap, not against
   a real interface. TLS decryption is covered only by the optional
   real-capture walk (a capture with embedded secrets), not by the default

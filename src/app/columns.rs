@@ -212,6 +212,24 @@ impl Columns {
         out
     }
 
+    /// Whether columns can be added: sharkd has to have told us how it
+    /// numbers the built-in ones, or the list cannot be described to it.
+    pub fn can_customize(&self) -> bool {
+        !self.numbers.is_empty()
+    }
+
+    /// Add a column showing `field`, just before the column that takes the
+    /// leftover width (normally Info).
+    pub fn add_custom(&mut self, title: &str, field: &str) {
+        let column = Column::describe(title, &format!("%Cus:{field}:0"));
+        let at = self
+            .cols
+            .iter()
+            .position(|c| c.flexible)
+            .unwrap_or(self.cols.len());
+        self.cols.insert(at, column);
+    }
+
     /// Whether the time format can be changed (sharkd told us its column numbers).
     pub fn can_change_time(&self) -> bool {
         !self.numbers.is_empty() && self.cols.iter().any(Column::is_time)

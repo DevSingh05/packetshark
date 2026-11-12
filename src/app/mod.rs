@@ -207,6 +207,8 @@ pub struct App {
     held_keys: Vec<KeyEvent>,
     /// Keys typed before the capture had opened; see `holds_for_opening`.
     typed_ahead: std::collections::VecDeque<KeyEvent>,
+    /// Columns added on top of the profile's, as (title, field).
+    pub extra_columns: Vec<(String, String)>,
     history: History,
     command_history: Vec<String>,
 
@@ -292,6 +294,7 @@ impl App {
             inflight: 0,
             held_keys: Vec::new(),
             typed_ahead: std::collections::VecDeque::new(),
+            extra_columns: Vec::new(),
             history,
             command_history: Vec::new(),
             tree: TreeState::with_expand_all(config.ui.expand_all),
@@ -1244,6 +1247,103 @@ impl App {
         }
         self.clipboard.push(text);
         self.info(format!("Copied {what} to the clipboard."));
+    }
+
+    // ---- columns ----------------------------------------------------------
+
+    /// The profile's columns plus the ones added here.
+    pub(super) fn build_columns(&mut self) {
+        let Some(status) = &self.status else { return };
+        let mut columns = Columns::new(status, self.info.as_ref());
+        if columns.can_customize() {
+            for (title, field) in &self.extra_columns {
+                columns.add_custom(title, field);
+            }
+        }
+        self.columns = columns;
+    }
+
+    /// Start adding a column for `field`; it appears once sharkd has
+    /// confirmed the field exists.
+    pub(super) fn add_column(&mut self, field: &str, title: Option<&str>) {
+        let field = field.trim();
+        if field.is_empty() || field.contains(char::is_whitespace) || field.contains(':') {
+            self.error("A column shows one field, e.g. :column tcp.stream");
+            return;
+        }
+        if self.extra_columns.iter().any(|(_, f)| f == field) {
+            self.info(format!("There is already a column for {field}."));
+            return;
+        }
+        let title = title.map_or(field, str::trim).to_string();
+        self.send(Request::CheckField {
+            title,
+            field: field.to_string(),
+        });
+    }
+
+    pub(super) fn on_field_checked(
+        &mut self,
+        title: String,
+        field: String,
+        result: Result<(), String>,
+    ) {
+        if let Err(reason) = result {
+            self.error(format!("No column added: {reason}"));
+            return;
+        }
+        if !self.columns.can_customize() && self.status.is_some() {
+            self.error("This version of sharkd cannot show extra columns.");
+            return;
+        }
+        if self.extra_columns.iter().any(|(_, f)| *f == field) {
+            return;
+        }
+        self.info(format!("Added column {title}."));
+        self.extra_columns.push((title, field));
+        self.columns_changed();
+    }
+
+    /// Remove an added column by its title or field, or all of them.
+    pub(super) fn remove_column(&mut self, which: &str) {
+        let before = self.extra_columns.len();
+        if which.is_empty() {
+            self.extra_columns.clear();
+        } else {
+            self.extra_columns
+                .retain(|(title, field)| title != which && field != which);
+        }
+        match before - self.extra_columns.len() {
+            0 if which.is_empty() => self.info("No columns have been added."),
+            0 => self.error(format!(
+                "No added column is called {which}. Columns from the Wireshark profile are changed in Wireshark."
+            )),
+            1 => self.info("Removed 1 column."),
+            n => self.info(format!("Removed {n} columns.")),
+        }
+        if before != self.extra_columns.len() {
+            self.columns_changed();
+        }
+    }
+
+    fn columns_changed(&mut self) {
+        if self.status.is_some() {
+            self.build_columns();
+            // Widths were measured for the old set of columns.
+            self.list.widths.clear();
+            self.refresh_list();
+        }
+    }
+
+    /// Add the field selected in the details pane as a column.
+    pub(super) fn column_from_selected(&mut self) {
+        if !self.detail_ready() {
+            return;
+        }
+        match self.selected_node().and_then(|n| n.field.clone()) {
+            Some(field) => self.add_column(&field, None),
+            None => self.info("This line is not a field, so it cannot be a column."),
+        }
     }
 
     pub fn selected_node(&self) -> Option<&crate::sharkd::types::Node> {

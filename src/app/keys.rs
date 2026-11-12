@@ -417,6 +417,7 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => self.tree.expand_or_descend(tree),
             KeyCode::Char('h') | KeyCode::Left => self.tree.collapse_or_ascend(tree),
             KeyCode::Char('*') => self.tree.expand_subtree(tree),
+            KeyCode::Char('C') => return self.column_from_selected(),
             KeyCode::Char('e') => {
                 let on = !self.tree.expand_all;
                 self.tree.set_expand_all(tree, on);

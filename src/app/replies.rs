@@ -2,7 +2,6 @@
 
 use std::time::Instant;
 
-use super::columns::Columns;
 use super::detail::Detail;
 use super::{App, Level, LoadState, Overlay, contains};
 use crate::sharkd::{Purpose, Reply, Seek};
@@ -18,10 +17,10 @@ impl App {
             Reply::Info(result) => {
                 if let Ok(info) = result {
                     self.info = Some(info);
-                    if let Some(status) = &self.status {
+                    if self.status.is_some() {
                         // The first page may already have been requested with
                         // the profile's columns; fetch again with ours.
-                        self.columns = Columns::new(status, self.info.as_ref());
+                        self.build_columns();
                         self.refresh_list();
                     }
                 }
@@ -92,6 +91,11 @@ impl App {
                 self.filter.on_check(seq, result);
                 self.apply_checked_filter();
             }
+            Reply::FieldChecked {
+                title,
+                field,
+                result,
+            } => self.on_field_checked(title, field, result),
             Reply::Complete {
                 seq,
                 prefix,
@@ -189,8 +193,8 @@ impl App {
             Ok((status, warning)) => {
                 let first = self.status.is_none();
                 self.loaded_once = true;
-                self.columns = Columns::new(&status, self.info.as_ref());
                 self.status = Some(status);
+                self.build_columns();
                 self.load = LoadState::Ready;
                 if first {
                     self.list.reset();

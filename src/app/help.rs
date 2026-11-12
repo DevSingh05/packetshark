@@ -56,6 +56,7 @@ pub const SECTIONS: &[Section] = &[
             ("*", "Expand everything under the field"),
             ("e", "Expand or collapse the whole tree"),
             ("a", "Apply the field as a filter"),
+            ("C", "Add the field as a column in the packet list"),
             (
                 "p",
                 "Prepare a filter from the field (edit before applying)",
@@ -130,6 +131,11 @@ pub const SECTIONS: &[Section] = &[
             ),
             (":follow [proto]", "Follow the selected packet's stream"),
             (":write <file>", "Save the displayed packets"),
+            (":column <field> [title]", "Add a column showing a field"),
+            (
+                ":column remove [name]",
+                "Remove an added column (all, without a name)",
+            ),
             (":marked", "Show only marked packets"),
             (":unmark", "Remove all marks"),
             (":keylog <file>", "Decrypt TLS with a key log file"),

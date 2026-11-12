@@ -1729,3 +1729,66 @@ fn ascii_mode_draws_nothing_outside_ascii() {
     assert!(screen.contains("+- Statistics -"), "{screen}");
     assert!(screen.contains("> Frame 1"), "{screen}");
 }
+
+#[test]
+fn columns_can_be_added_and_removed() {
+    let Some(mut h) = Harness::open(&pcap::web()) else {
+        return;
+    };
+    assert!(!h.line(2).contains("Stream"), "{}", h.line(2));
+    h.keys(":column tcp.stream Stream\n");
+    assert!(
+        h.message().contains("Added column Stream"),
+        "{}",
+        h.message()
+    );
+    let header = h.line(2);
+    assert!(
+        header.find("Stream").unwrap() < header.find("Info").unwrap(),
+        "the new column goes before Info: {header}"
+    );
+    // The first TCP packet is in stream 0; the DNS packets have no value.
+    let screen = h.screen();
+    let Some((_, syn)) = h.find_line("40000 → 80") else {
+        panic!("no TCP row:\n{screen}");
+    };
+    assert!(syn.contains(" 0 "), "{syn}");
+    // It survives a reload and a filter change.
+    h.ctrl('r');
+    h.keys("/tcp\n");
+    assert!(h.line(2).contains("Stream"), "{}", h.line(2));
+
+    // A second one, from the selected field in the details pane.
+    h.key(KeyCode::Enter);
+    h.keys("jjl");
+    h.keys("zjjjjjjjj");
+    let screen = h.screen();
+    let Some((y, _)) = h.find_line("Time to Live") else {
+        panic!("no TTL line:\n{screen}");
+    };
+    h.click(5, y);
+    h.keys("z");
+    h.key(KeyCode::Char('C'));
+    assert!(
+        h.message().contains("Added column ip.ttl"),
+        "{}",
+        h.message()
+    );
+    assert!(h.line(2).contains("ip.ttl"), "{}", h.line(2));
+
+    // Adding it twice, or adding nonsense, changes nothing.
+    h.keys(":column ip.ttl\n");
+    assert!(h.message().contains("already"), "{}", h.message());
+    h.keys(":column no.such.field\n");
+    assert!(h.message().contains("No column added"), "{}", h.message());
+    assert_eq!(h.app.extra_columns.len(), 2);
+
+    h.keys(":column remove Stream\n");
+    assert!(!h.line(2).contains("Stream"), "{}", h.line(2));
+    assert!(h.line(2).contains("ip.ttl"), "{}", h.line(2));
+    h.keys(":column remove\n");
+    assert!(!h.line(2).contains("ip.ttl"), "{}", h.line(2));
+    h.keys(":column remove Source\n");
+    assert!(h.message().contains("Wireshark profile"), "{}", h.message());
+    h.assert_screen_contains("40000 → 80");
+}
