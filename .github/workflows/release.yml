@@ -1,0 +1,81 @@
+name: Release
+
+# Builds the binaries people download. A tag like v0.1.0 publishes them as a
+# GitHub release; running the workflow by hand only builds them, as a check.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux binaries are linked against musl so that they are fully
+          # static and run on any distribution.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Check that the Linux binary is static
+        if: contains(matrix.target, 'musl')
+        run: |
+          file target/${{ matrix.target }}/release/packetshark
+          file target/${{ matrix.target }}/release/packetshark | grep -Eq "static(ally|-pie) linked"
+      - name: Run it
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: target/${{ matrix.target }}/release/packetshark --version
+      - name: Package
+        run: |
+          name=packetshark-${{ matrix.target }}
+          mkdir "$name"
+          cp target/${{ matrix.target }}/release/packetshark README.md LICENSE config.example.toml "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packetshark-${{ matrix.target }}
+          path: |
+            packetshark-${{ matrix.target }}.tar.gz
+            packetshark-${{ matrix.target }}.tar.gz.sha256
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes \
+            packetshark-*.tar.gz packetshark-*.tar.gz.sha256
