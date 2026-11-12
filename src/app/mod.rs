@@ -8,6 +8,7 @@ pub mod detail;
 pub mod filter;
 pub mod follow;
 pub mod help;
+pub mod keymap;
 pub mod list;
 pub mod stats;
 
@@ -322,6 +323,11 @@ pub struct App {
     jump_back: Option<u32>,
     /// A packet to go to once the capture being opened has loaded.
     after_open_goto: Option<u32>,
+    /// Key mappings, read from the remembered ones: a key and what it
+    /// stands for.
+    maps: Vec<(KeyEvent, Vec<KeyEvent>)>,
+    /// Keys being played back from a mapping are not themselves mapped.
+    replaying: bool,
     /// Choices remembered between runs.
     pub state: State,
     store: Store,
@@ -418,6 +424,8 @@ impl App {
             local_marks: std::collections::BTreeMap::new(),
             jump_back: None,
             after_open_goto: None,
+            maps: Vec::new(),
+            replaying: false,
             state: options.store.load(),
             store: options.store,
             base_theme,
@@ -429,6 +437,7 @@ impl App {
             ticks: 0,
         };
 
+        app.load_maps();
         // The theme last chosen with `:theme`, else the one in the config.
         if let Some(name) = app
             .state
@@ -516,10 +525,14 @@ impl App {
         match event {
             Event::Key(key) => {
                 if key.kind == KeyEventKind::Release {
-                } else if self.holds_for_opening(&key) {
-                    self.typed_ahead.push_back(key);
+                } else if let Some(keys) = self.mapped(key) {
+                    self.replaying = true;
+                    for key in keys {
+                        self.type_key(key);
+                    }
+                    self.replaying = false;
                 } else {
-                    self.on_key(key);
+                    self.type_key(key);
                 }
             }
             Event::Mouse(mouse) => self.on_mouse(mouse),
@@ -534,6 +547,108 @@ impl App {
         self.request_pages();
         self.sync_detail();
         self.replay_typed_ahead();
+    }
+
+    fn type_key(&mut self, key: KeyEvent) {
+        if self.holds_for_opening(&key) {
+            self.typed_ahead.push_back(key);
+        } else {
+            self.on_key(key);
+        }
+    }
+
+    // ---- key mappings -----------------------------------------------------
+
+    /// What `key` stands for, if it is mapped and typed where mappings
+    /// apply: not while text is being entered, where a key is its character.
+    fn mapped(&self, key: KeyEvent) -> Option<Vec<KeyEvent>> {
+        if self.replaying || self.prompt.is_some() || self.focus == Focus::Filter {
+            return None;
+        }
+        let wanted = keymap::normalize(key);
+        self.maps
+            .iter()
+            .find(|(from, _)| keymap::normalize(*from) == wanted)
+            .map(|(_, to)| to.clone())
+    }
+
+    /// Read the remembered mappings. One that no longer parses is skipped.
+    fn load_maps(&mut self) {
+        self.maps = self
+            .state
+            .maps
+            .iter()
+            .filter_map(|map| {
+                let from = keymap::parse(&map.key).ok()?;
+                let to = keymap::parse(&map.keys).ok()?;
+                (from.len() == 1).then(|| (from[0], to))
+            })
+            .collect();
+    }
+
+    /// `:map <key> <keys>`: make one key stand for a sequence of keys.
+    pub(super) fn map_key(&mut self, arg: &str) {
+        let (key, keys) = match arg.split_once(char::is_whitespace) {
+            Some((k, rest)) => (k, rest.trim()),
+            None => (arg, ""),
+        };
+        if key.is_empty() {
+            return self.maps_menu();
+        }
+        if keys.is_empty() {
+            return self.error("Usage: :map <key> <keys>, e.g. :map <f5> :conv<enter>");
+        }
+        let parsed = match (keymap::parse(key), keymap::parse(keys)) {
+            (Ok(from), Ok(to)) if from.len() == 1 => (from[0], to),
+            (Ok(_), Ok(_)) => return self.error("Only a single key can be mapped."),
+            (Err(e), _) | (_, Err(e)) => return self.error(e),
+        };
+        let name = keymap::describe(parsed.0);
+        self.state.maps.retain(|m| m.key != name);
+        self.state.maps.push(crate::config::KeyMap {
+            key: name.clone(),
+            keys: keys.to_string(),
+        });
+        self.save_state();
+        self.load_maps();
+        self.info(format!("{name} now types {keys}"));
+    }
+
+    /// `:unmap <key>`.
+    pub(super) fn unmap_key(&mut self, arg: &str) {
+        let name = match keymap::parse(arg.trim()) {
+            Ok(keys) if keys.len() == 1 => keymap::describe(keys[0]),
+            Ok(_) => return self.error("Usage: :unmap <key>"),
+            Err(e) => return self.error(e),
+        };
+        let before = self.state.maps.len();
+        self.state.maps.retain(|m| m.key != name);
+        if self.state.maps.len() == before {
+            return self.error(format!("{name} is not mapped."));
+        }
+        self.save_state();
+        self.load_maps();
+        self.info(format!("{name} is no longer mapped."));
+    }
+
+    fn maps_menu(&mut self) {
+        if self.state.maps.is_empty() {
+            return self.info("No keys are mapped. Example: :map <f5> :conv<enter>");
+        }
+        let keys = "abcdefghijklmnopqrstuvwxyz";
+        let items = self
+            .state
+            .maps
+            .iter()
+            .zip(keys.chars())
+            .map(|(map, key)| MenuItem {
+                key,
+                label: format!("{:<10} {}", map.key, map.keys),
+                // Choosing one puts it on the command line, ready to change.
+                action: Action::Command(format!("edit-map {}", map.key)),
+            })
+            .collect();
+        self.open_menu("Key mappings (Enter to change one)", items);
     }
 
     /// Whether a capture file is being opened for the first time, with

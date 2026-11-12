@@ -36,6 +36,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("help", "", "Show the keys and commands"),
     cmd("keylog", "<file>", "Decrypt TLS with a key log file"),
     cmd("layout", "<name>", "stacked, side"),
+    cmd("map", "<key> <keys>", "Make a key type a sequence of keys"),
     cmd("marked", "", "Show only marked packets"),
     cmd("marks", "", "List the marks, and go to one"),
     cmd("no-theme", "", "Go back to the terminal's own colours"),
@@ -49,6 +50,7 @@ pub const COMMANDS: &[Command] = &[
     cmd("stop", "", "Stop a live capture"),
     cmd("theme", "[name]", "Choose a colour theme"),
     cmd("time", "<format>", "Change the time format"),
+    cmd("unmap", "<key>", "Remove a key mapping"),
     cmd("unmark", "", "Remove all marks"),
     cmd("write", "<file>", "Save the displayed packets"),
 ];
@@ -164,6 +166,15 @@ impl App {
                 .column_list()
                 .into_iter()
                 .map(|c| Candidate::plain(c.title))
+                .collect(),
+            ["unmap"] => self
+                .state
+                .maps
+                .iter()
+                .map(|m| Candidate {
+                    text: m.key.clone(),
+                    about: m.keys.clone(),
+                })
                 .collect(),
             ["open" | "o" | "e" | "write" | "w" | "save" | "export" | "keylog"] => {
                 return Candidates {

@@ -52,6 +52,26 @@ impl App {
             "w" | "write" | "export" | "save" => self.export(arg),
             "marked" => self.show_marked(),
             "marks" => self.marks_menu(),
+            "map" => self.map_key(arg),
+            "unmap" => {
+                if arg.is_empty() {
+                    self.error("Usage: :unmap <key>");
+                } else {
+                    self.unmap_key(arg);
+                }
+            }
+            // What an entry of the mappings list does.
+            "edit-map" => {
+                let line = self
+                    .state
+                    .maps
+                    .iter()
+                    .find(|m| m.key == arg)
+                    .map(|m| format!("map {} {}", m.key, m.keys));
+                if let Some(line) = line {
+                    self.open_prompt(super::PromptKind::Command, &line);
+                }
+            }
             // What an entry of the marks list does.
             "jump" => match arg.chars().next() {
                 Some(letter) if letter.is_ascii_alphabetic() => self.jump_to_mark(letter),

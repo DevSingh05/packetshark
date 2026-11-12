@@ -278,6 +278,8 @@ and a hint:
 | `:keylog <file>`          | Decrypt TLS with a key log file                               |
 | `:set <pref> <value>`     | Set a Wireshark preference                                    |
 | `:time <format>`          | relative, delta, absolute, date, utc, utc-date, default       |
+| `:map <key> <keys>`       | Make a key type a sequence of keys                            |
+| `:unmap <key>`            | Remove a key mapping (:map lists them)                        |
 | `:theme [name]`           | Choose a colour theme (a list, without a name)                |
 | `:colors <mode>`          | Packet row colours: wireshark, tint, off                      |
 | `:layout <name>`          | stacked, side                                                 |
@@ -317,6 +319,23 @@ The config file is yours: packetshark reads it and never writes to it.
 Row colours: `wireshark` paints rows with your colouring rules as the GUI
 does. If that clashes with your terminal theme, `tint` colours only the text
 and `off` uses none. `c` cycles through them.
+
+### Key mappings
+
+`:map` makes one key type a sequence of keys, and the mapping is remembered:
+
+```
+:map <f5> :conv<enter>         F5 opens the conversations
+:map <C-s> /                   Ctrl-s starts a filter
+:map T /tcp.analysis.retransmission<enter>
+```
+
+A printable key is written as itself; the others as `<enter>`, `<esc>`,
+`<space>`, `<tab>`, `<bs>`, `<del>`, `<up>`, `<down>`, `<left>`, `<right>`,
+`<pgup>`, `<pgdn>`, `<home>`, `<end>`, `<f1>` to `<f12>`, and `<lt>` for `<`.
+`<C-x>` is Ctrl-x and `<A-x>` is Alt-x. `:map` on its own lists the mappings
+and `:unmap <key>` removes one. A mapped key is not mapped inside another
+mapping, and while you type a filter or a command it is just its character.
 
 ### Themes
 

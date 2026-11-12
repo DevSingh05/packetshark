@@ -111,7 +111,7 @@ impl App {
         }
     }
 
-    fn open_prompt(&mut self, kind: PromptKind, initial: &str) {
+    pub(super) fn open_prompt(&mut self, kind: PromptKind, initial: &str) {
         let mut input = TextInput::new();
         if kind == PromptKind::Command {
             input.set_history(self.command_history.clone());

@@ -169,6 +169,8 @@ pub const SECTIONS: &[Section] = &[
                 ":time <format>",
                 "relative, delta, absolute, date, utc, utc-date, default",
             ),
+            (":map <key> <keys>", "Make a key type a sequence of keys"),
+            (":unmap <key>", "Remove a key mapping (:map lists them)"),
             (
                 ":theme [name]",
                 "Choose a colour theme (a list, without a name)",

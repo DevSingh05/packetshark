@@ -2361,3 +2361,88 @@ fn marks_counts_and_the_way_back() {
     assert_eq!(h.app.source, first);
     assert_eq!(at(&h), 8);
 }
+
+#[test]
+fn keys_can_be_mapped_to_sequences_and_are_remembered() {
+    use packetshark::config::Store;
+    let scratch = tempfile::tempdir().unwrap();
+    let store = Store::at(scratch.path().join("state.toml"));
+    let options = || Options {
+        store: store.clone(),
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::open_with(&pcap::web(), 100, 30, options()) else {
+        return;
+    };
+    let press = |h: &mut Harness, code: KeyCode| {
+        h.key(code);
+    };
+
+    h.keys(":map <f5> :conv<enter>\n");
+    assert!(
+        h.message().contains("<f5> now types :conv<enter>"),
+        "{}",
+        h.message()
+    );
+    press(&mut h, KeyCode::F(5));
+    h.assert_screen_contains("Conversations");
+    h.key(KeyCode::Esc);
+
+    // A mapping can move around and act: down three, then filter on tcp.
+    h.keys(":map T jjj/tcp<enter>\n");
+    h.keys("T");
+    assert_eq!(h.app.filter.applied, "tcp");
+    // ... but while typing text, a mapped key is just its character.
+    h.keys("/http || frame.len > T");
+    assert_eq!(h.app.filter.input.text(), "http || frame.len > T");
+    h.key(KeyCode::Esc);
+    h.keys(":filter udp || T\n");
+    assert!(
+        h.message().contains("Invalid") || h.app.filter.applied != "tcp",
+        "typed as text"
+    );
+
+    // A mapping is not applied to the keys of a mapping, so this cannot loop.
+    h.keys(":map j jj\n");
+    h.keys("x");
+    h.keys("gg");
+    h.keys("j");
+    assert_eq!(
+        h.app.list.selected_num(),
+        Some(3),
+        "j now moves two, not forever"
+    );
+
+    // Mistakes are refused with a reason.
+    h.keys(":map <f99> x\n");
+    assert!(
+        h.message().contains("<f99> is not a key"),
+        "{}",
+        h.message()
+    );
+    h.keys(":map ab cd\n");
+    assert!(h.message().contains("Only a single key"), "{}", h.message());
+    h.keys(":unmap <f9>\n");
+    assert!(
+        h.message().contains("<f9> is not mapped"),
+        "{}",
+        h.message()
+    );
+
+    // The list, and removing one.
+    h.keys(":map\n");
+    h.assert_screen_contains("Key mappings");
+    h.assert_screen_contains(":conv<enter>");
+    h.key(KeyCode::Esc);
+    h.keys(":unmap j\n");
+    h.keys("ggj");
+    assert_eq!(h.app.list.selected_num(), Some(2));
+    drop(h);
+
+    // Mappings are there in the next run.
+    let Some(mut h) = Harness::open_with(&pcap::web(), 100, 30, options()) else {
+        return;
+    };
+    press(&mut h, KeyCode::F(5));
+    h.assert_screen_contains("Conversations");
+}
