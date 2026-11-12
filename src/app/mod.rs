@@ -278,6 +278,8 @@ pub struct Options {
     pub tail: bool,
     /// Wireshark preferences to set before loading (`name`, `value`).
     pub prefs: Vec<(String, String)>,
+    /// How packet times are shown to begin with.
+    pub time_format: TimeFormat,
     /// Where choices made while running are remembered.
     pub store: Store,
     /// Where the user's own themes are.
@@ -340,6 +342,9 @@ pub struct App {
     capture_failure_reported: bool,
     tap_seq: u64,
     pub quit: bool,
+    /// Ctrl-z was pressed: the program should stop and give the terminal
+    /// back until it is continued.
+    pub suspend: bool,
     /// A key waiting for the one after it.
     pub pending: Pending,
     /// A count typed before a motion, as in `25G`.
@@ -425,7 +430,7 @@ impl App {
             status: None,
             load: LoadState::Loading,
             columns: Columns::default(),
-            time_format: TimeFormat::default(),
+            time_format: options.time_format,
             filter,
             list: PacketList::default(),
             detail: None,
@@ -451,6 +456,7 @@ impl App {
             capture_failure_reported: false,
             tap_seq: 0,
             quit: false,
+            suspend: false,
             pending: Pending::None,
             count: None,
             count_focus: None,
@@ -560,6 +566,10 @@ impl App {
         match event {
             Event::Key(key) => {
                 if key.kind == KeyEventKind::Release {
+                } else if key.code == KeyCode::Char('z')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    self.suspend = true;
                 } else if let Some(keys) = self.mapped(key) {
                     self.replaying = true;
                     for key in keys {
@@ -1809,6 +1819,27 @@ impl App {
         });
     }
 
+    /// What to tell the user about the captured packets as the program
+    /// leaves: where they were kept, or that they were not.
+    pub fn capture_farewell(&self) -> Option<String> {
+        let capture = self.capture.as_ref()?;
+        let packets = self.frames();
+        if capture.kept() {
+            Some(format!(
+                "{} packets were saved in {}",
+                crate::util::thousands(u64::from(packets)),
+                capture.path().display()
+            ))
+        } else if packets > 0 {
+            Some(format!(
+                "{} captured packets were not kept. To keep them next time, start with -w FILE, or use :write FILE before quitting.",
+                crate::util::thousands(u64::from(packets))
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Note that `path` was opened, for the list of recent captures.
     pub(super) fn remember_capture(&mut self, path: &Path) {
         const KEEP: usize = 20;
@@ -1912,8 +1943,54 @@ impl App {
             ));
             return;
         }
-        self.clipboard.push(text);
-        self.info(format!("Copied {what} to the clipboard."));
+        let Some((program, args)) = self.config.ui.copy_command.split_first() else {
+            // The terminal sets the clipboard (OSC 52), which also works
+            // over SSH.
+            self.clipboard.push(text);
+            return self.info(format!("Copied {what} to the clipboard."));
+        };
+        // The user's own command gets the text on its standard input. It
+        // runs apart from the interface, which must not wait on it.
+        let (program, args) = (program.clone(), args.to_vec());
+        let events = self.events.clone();
+        let what = what.to_string();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            use std::process::{Command, Stdio};
+            let outcome = Command::new(&program)
+                .args(&args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("Could not run the copy command {program}: {e}"))
+                .and_then(|mut child| {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        // A command that does not read its input closes the
+                        // pipe; its exit status says whether that mattered.
+                        let _ = stdin.write_all(text.as_bytes());
+                    }
+                    let output = child
+                        .wait_with_output()
+                        .map_err(|e| format!("The copy command {program} failed: {e}"))?;
+                    if output.status.success() {
+                        Ok(())
+                    } else {
+                        let why = String::from_utf8_lossy(&output.stderr);
+                        let why = why.lines().next().unwrap_or("").trim().to_string();
+                        Err(if why.is_empty() {
+                            format!("The copy command {program} failed.")
+                        } else {
+                            format!("The copy command {program} failed: {why}")
+                        })
+                    }
+                });
+            let (ok, message) = match outcome {
+                Ok(()) => (true, format!("Copied {what} with {program}.")),
+                Err(e) => (false, e),
+            };
+            let _ = events.send(Event::Job { ok, message });
+        });
     }
 
     // ---- columns ----------------------------------------------------------

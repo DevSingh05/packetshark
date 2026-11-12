@@ -9,6 +9,11 @@ on:
     # Mondays: a dependency can gain a security advisory without any commit here.
     - cron: "0 7 * * 1"
 
+# A newer push to the same branch makes the run for the older one pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 

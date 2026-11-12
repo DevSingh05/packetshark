@@ -27,6 +27,7 @@ pub const SECTIONS: &[Section] = &[
             ("ZZ", "Quit"),
             ("Ctrl-r", "Reload the capture"),
             ("Ctrl-c", "Stop a live capture, or quit"),
+            ("Ctrl-z", "Suspend to the shell (fg comes back)"),
         ],
     },
     Section {

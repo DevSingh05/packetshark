@@ -122,6 +122,7 @@ pub struct Capture {
     producer: Producer,
     path: PathBuf,
     stopped: bool,
+    kept: bool,
     // Deleted on drop; declared last so the producer is stopped first.
     _dir: TempDir,
 }
@@ -132,9 +133,15 @@ impl Capture {
         dumpcap: &Path,
         interfaces: &[String],
         capture_filter: Option<&str>,
+        keep_in: Option<&Path>,
     ) -> Result<Capture, String> {
         let dir = spool_dir()?;
-        let path = dir.path().join("capture.pcapng");
+        // Normally a temporary file that goes when the program does; the
+        // user's own file if they asked to keep the packets.
+        let path = match keep_in {
+            Some(path) => path.to_path_buf(),
+            None => dir.path().join("capture.pcapng"),
+        };
         let log = dir.path().join("dumpcap.log");
         let log_file = File::create(&log).map_err(|e| format!("could not create log: {e}"))?;
         let mut cmd = Command::new(dumpcap);
@@ -154,14 +161,21 @@ impl Capture {
             producer: Producer::Dumpcap { child, log },
             path,
             stopped: false,
+            kept: keep_in.is_some(),
             _dir: dir,
         })
     }
 
     /// Spool a capture stream from `input` (normally stdin).
-    pub fn from_reader(mut input: impl Read + Send + 'static) -> Result<Capture, String> {
+    pub fn from_reader(
+        mut input: impl Read + Send + 'static,
+        keep_in: Option<&Path>,
+    ) -> Result<Capture, String> {
         let dir = spool_dir()?;
-        let path = dir.path().join("stdin.pcap");
+        let path = match keep_in {
+            Some(path) => path.to_path_buf(),
+            None => dir.path().join("stdin.pcap"),
+        };
         let mut file =
             File::create(&path).map_err(|e| format!("could not create spool file: {e}"))?;
         let done = Arc::new(AtomicBool::new(false));
@@ -197,6 +211,7 @@ impl Capture {
             producer: Producer::Stdin { done, stop, error },
             path,
             stopped: false,
+            kept: keep_in.is_some(),
             _dir: dir,
         })
     }
@@ -204,6 +219,17 @@ impl Capture {
     /// The file being written.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Whether the packets are going to a file of the user's, which stays
+    /// after the program has gone.
+    pub fn kept(&self) -> bool {
+        self.kept
+    }
+
+    /// How much has been captured so far, in bytes.
+    pub fn size(&self) -> u64 {
+        fs::metadata(&self.path).map_or(0, |m| m.len())
     }
 
     /// Whether packets may still arrive.
@@ -454,7 +480,7 @@ mod tests {
     #[test]
     fn stopping_a_piped_capture_stops_the_spooling() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut cap = Capture::from_reader(Piped(rx)).unwrap();
+        let mut cap = Capture::from_reader(Piped(rx), None).unwrap();
         tx.send(b"first".to_vec()).unwrap();
         wait_until("the first chunk", || {
             fs::read(cap.path()).unwrap() == b"first"
@@ -488,7 +514,7 @@ mod tests {
         // A script cannot be run on Linux while a child that another test
         // has just forked still holds it open for writing.
         let mut cap = loop {
-            match Capture::live(&script, &["nope0".into()], None) {
+            match Capture::live(&script, &["nope0".into()], None, None) {
                 Ok(cap) => break cap,
                 Err(e) if e.contains("ext file busy") => {
                     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -509,7 +535,7 @@ mod tests {
     #[test]
     fn spools_a_reader_to_a_file() {
         let data: Vec<u8> = (0..200_000u32).map(|i| i as u8).collect();
-        let mut cap = Capture::from_reader(io::Cursor::new(data.clone())).unwrap();
+        let mut cap = Capture::from_reader(io::Cursor::new(data.clone()), None).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while cap.running() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(5));

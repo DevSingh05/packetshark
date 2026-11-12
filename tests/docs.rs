@@ -88,6 +88,7 @@ fn the_example_config_is_valid_and_shows_the_defaults() {
     assert_eq!(example.ui.mouse, defaults.ui.mouse);
     assert_eq!(example.ui.expand_all, defaults.ui.expand_all);
     assert_eq!(example.ui.ascii, defaults.ui.ascii);
+    assert_eq!(example.ui.copy_command, defaults.ui.copy_command);
     assert!(example.sharkd.is_none() && example.profile.is_none());
 }
 

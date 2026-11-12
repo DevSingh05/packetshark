@@ -38,7 +38,8 @@ rule and preference Wireshark has works here, with the same results.
 - **A command line that completes** commands, their arguments and file
   names with Tab.
 - **Apply or prepare a filter** from any field, and **copy** values, filters
-  or bytes to the clipboard (using OSC 52, so it works over SSH).
+  or bytes to the clipboard (using OSC 52, so it works over SSH; or through
+  a command such as `xclip`, where the terminal cannot).
 - **Live capture** through `dumpcap`, a capture **piped in on stdin**, or a
   file that another program is still writing.
 - **Your Wireshark profile**: columns, colouring rules and preferences are
@@ -103,12 +104,21 @@ packetshark capture.pcapng                    # open a capture
 packetshark -Y 'http && ip.addr == 10.0.0.1' capture.pcapng
 packetshark -i en0                            # capture live (see below)
 packetshark -i en0 -f 'port 53'               # ... with a capture filter
+packetshark -i en0 -w kept.pcapng             # ... and keep the packets
 ssh host tcpdump -U -w - | packetshark -      # capture on another machine
 packetshark --tail growing.pcap               # follow a file being written
 packetshark --keylog keys.log tls.pcapng      # decrypt TLS
 packetshark -D                                # list capture interfaces
 packetshark                                   # choose an interface from a list
+packetshark -t ad capture.pcapng              # times as date and time of day
+packetshark -Y dns capture.pcapng | less      # no terminal: print like tshark
 ```
+
+A capture read from stdin leaves the terminal alone until packets arrive, so
+`sudo tcpdump -U -w - | packetshark -` can ask for its password first. The
+packets of a live or piped capture are kept only if you give `-w FILE`;
+otherwise `:write FILE` saves them before you quit. Ctrl-z suspends
+packetshark as it does any program, and `fg` brings it back.
 
 Press `?` inside packetshark for the keys. `packetshark --help` lists the options.
 
@@ -167,6 +177,7 @@ and a hint:
 | `ZZ`                 | Quit                                            |
 | `Ctrl-r`             | Reload the capture                              |
 | `Ctrl-c`             | Stop a live capture, or quit                    |
+| `Ctrl-z`             | Suspend to the shell (fg comes back)            |
 
 **Moving**
 
@@ -319,6 +330,7 @@ mouse = true
 expand_all = false         # start with the details tree fully open
 ascii = false              # draw with ASCII only (automatic without UTF-8)
 theme = "nord"             # colour theme, until you choose one with :theme
+copy_command = ["pbcopy"]  # program that copied text is piped to
 ```
 
 Recent filters are remembered in `~/.local/state/packetshark/filters`, and

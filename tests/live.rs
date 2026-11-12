@@ -40,8 +40,9 @@ fn wait_for(h: &mut Harness, what: &str, mut done: impl FnMut(&mut Harness) -> b
 
 /// Start the app on a capture produced by `dumpcap`.
 fn start(dumpcap: &Path, dir: tempfile::TempDir) -> Option<Harness> {
-    let capture =
-        common::retry_while_busy(|| Capture::live(dumpcap, &["en0".to_string()], Some("port 53")));
+    let capture = common::retry_while_busy(|| {
+        Capture::live(dumpcap, &["en0".to_string()], Some("port 53"), None)
+    });
     let options = Options {
         tail: true,
         ..Default::default()

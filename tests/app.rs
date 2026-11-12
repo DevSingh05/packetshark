@@ -1546,9 +1546,10 @@ fn a_followed_file_that_is_not_a_capture_waits_quietly() {
 
 #[test]
 fn a_pipe_that_carried_no_capture_is_reported_when_it_ends() {
-    let capture = packetshark::capture::Capture::from_reader(std::io::Cursor::new(
-        b"hello, not a capture\n".to_vec(),
-    ))
+    let capture = packetshark::capture::Capture::from_reader(
+        std::io::Cursor::new(b"hello, not a capture\n".to_vec()),
+        None,
+    )
     .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let options = Options {
@@ -2871,4 +2872,68 @@ fn capture_properties_and_recent_captures() {
         .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names, ["first.pcap", "second.pcap"]);
+}
+
+#[test]
+fn copying_can_go_through_a_command_of_the_users() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.pcap");
+    pcap::web().write(&path);
+    let copied = dir.path().join("copied.txt");
+    let mut config = packetshark::config::Config::default();
+    // `sh -c 'cat > FILE'` stands in for pbcopy or xclip.
+    config.ui.copy_command = vec![
+        "sh".into(),
+        "-c".into(),
+        format!("cat > '{}'", copied.display()),
+    ];
+    let Some(mut h) = Harness::start_configured(dir, path, 100, 30, Options::default(), config)
+    else {
+        return;
+    };
+    h.settle();
+    select_field(&mut h, "Time to Live");
+    h.key(KeyCode::Char('y'));
+    h.keys("v");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !h.message().contains("Copied") {
+        assert!(Instant::now() < deadline, "not copied: {}", h.message());
+        std::thread::sleep(Duration::from_millis(20));
+        h.settle();
+    }
+    assert!(h.message().contains("with sh"), "{}", h.message());
+    assert_eq!(std::fs::read_to_string(&copied).unwrap(), "64");
+    assert!(
+        h.app.clipboard.is_empty(),
+        "the terminal was not asked as well"
+    );
+
+    // A command that fails says so.
+    h.app.config.ui.copy_command = vec![
+        "sh".into(),
+        "-c".into(),
+        "echo no display >&2; exit 3".into(),
+    ];
+    h.key(KeyCode::Char('y'));
+    h.keys("v");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !h.message().contains("failed") {
+        assert!(
+            Instant::now() < deadline,
+            "no failure reported: {}",
+            h.message()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        h.settle();
+    }
+    assert!(h.message().contains("no display"), "{}", h.message());
+    h.app.config.ui.copy_command = vec!["/no/such/program".into()];
+    h.key(KeyCode::Char('y'));
+    h.keys("v");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !h.message().contains("Could not run") {
+        assert!(Instant::now() < deadline, "{}", h.message());
+        std::thread::sleep(Duration::from_millis(20));
+        h.settle();
+    }
 }

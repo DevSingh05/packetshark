@@ -29,6 +29,12 @@ Notable changes to packetshark. The format follows
   direction only, or combine the row with the filter in use.
 - `:info` shows the capture file's properties, and `:recent` lists the
   captures opened lately.
+- `-w FILE` keeps the packets of a live or piped capture, and the program
+  says on exit where they went. `-t` sets the time format.
+- With no terminal on its output, packetshark prints packets through
+  tshark: `packetshark x.pcap | less`.
+- Ctrl-z suspends to the shell.
+- `copy_command` in the config pipes copied text to a program.
 - Key mappings: `:map <f5> :conv<enter>` makes a key type a sequence of
   keys, written as in vim, and is remembered.
 - `25G` and `25gg` go to a row; `Ctrl-w w` and `Ctrl-w =` switch pane and
@@ -36,6 +42,8 @@ Notable changes to packetshark. The format follows
 
 ### Changed
 
+- A capture piped in on stdin does not take the terminal until packets
+  arrive, so a `sudo` in the pipeline can ask for its password.
 - **Marking a packet for `:marked` is now `M`**, since `m` begins a mark.
 - The columns you arrange are remembered between runs. `:column reset` goes
   back to the Wireshark profile's.

@@ -17,6 +17,7 @@ use crossterm::{cursor, execute};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use packetshark::app::columns::TimeFormat;
 use packetshark::app::{App, Event, Options};
 use packetshark::capture::{self, Capture};
 use packetshark::config::{self, Config, History};
@@ -52,6 +53,16 @@ struct Cli {
     /// List capture interfaces and exit
     #[arg(short = 'D', long)]
     list_interfaces: bool,
+
+    /// Keep the packets of a live capture, or of one read from stdin, in
+    /// this file. Without it they are gone when packetshark exits
+    #[arg(short = 'w', long = "write", value_name = "FILE")]
+    write: Option<PathBuf>,
+
+    /// How to show packet times: r (relative), d (delta), dd (delta
+    /// displayed), a (time of day), ad (date and time), u (UTC), ud (UTC date)
+    #[arg(short = 't', value_name = "FORMAT")]
+    time: Option<String>,
 
     /// Keep reading the file as it grows (for a capture another program is
     /// still writing)
@@ -183,14 +194,19 @@ fn run(cli: Cli) -> Result<(), String> {
             return Err("give either a file or -i <interface>, not both".into());
         }
         let dumpcap = dumpcap(&sharkd_path)?;
-        let capture = Capture::live(&dumpcap, &interfaces, cli.capture_filter.as_deref())?;
+        let capture = Capture::live(
+            &dumpcap,
+            &interfaces,
+            cli.capture_filter.as_deref(),
+            cli.write.as_deref(),
+        )?;
         let title = format!("{} (live)", interfaces.join(", "));
         (capture.path().to_path_buf(), title, true, Some(capture))
     } else if from_stdin {
         if !stdin_piped {
             return Err("`-` reads a capture from stdin, but stdin is a terminal".into());
         }
-        let capture = Capture::from_reader(io::stdin())?;
+        let capture = Capture::from_reader(io::stdin(), cli.write.as_deref())?;
         (
             capture.path().to_path_buf(),
             "stdin".to_string(),
@@ -198,6 +214,11 @@ fn run(cli: Cli) -> Result<(), String> {
             Some(capture),
         )
     } else if let Some(file) = &cli.file {
+        if cli.write.is_some() {
+            return Err("-w keeps the packets of a live or piped capture; \
+                        for a file that already exists, use :write inside packetshark"
+                .into());
+        }
         if !file.exists() {
             return Err(format!("{} does not exist", file.display()));
         }
@@ -221,8 +242,34 @@ fn run(cli: Cli) -> Result<(), String> {
             .into());
     };
 
+    let time_format = match cli.time.as_deref() {
+        None => TimeFormat::default(),
+        Some(code) => time_format(code)?,
+    };
+
+    // Not at a terminal (`packetshark x.pcap | less`): there is no screen
+    // to draw on, so print the packets as tshark does instead.
     if !io::stdout().is_terminal() {
-        return Err("packetshark is an interactive program and needs a terminal on stdout".into());
+        drop(capture);
+        return pass_through(&cli, &sharkd_path, config.profile.as_deref());
+    }
+
+    // A capture arriving on stdin often comes from `sudo tcpdump`, which
+    // first has to ask for a password on this same terminal. Leave the
+    // terminal alone until packets arrive.
+    let mut capture = capture;
+    if from_stdin && let Some(piped) = &mut capture {
+        eprintln!(
+            "Waiting for packets on stdin; packetshark starts when they arrive. Ctrl-C gives up."
+        );
+        while piped.size() == 0 && piped.running() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if piped.size() == 0 {
+            return Err(piped
+                .failure()
+                .unwrap_or_else(|| "stdin ended without a single packet".to_string()));
+        }
     }
 
     let launch = Launch {
@@ -237,6 +284,7 @@ fn run(cli: Cli) -> Result<(), String> {
         display_filter: cli.display_filter.unwrap_or_default(),
         tail,
         prefs,
+        time_format,
         store: config::Store::standard(),
         themes_dir: config::themes_dir(),
     };
@@ -279,7 +327,11 @@ fn run(cli: Cli) -> Result<(), String> {
     leave(mouse);
     // Stop sharkd and any capture before reporting.
     let startup_failure = app.startup_failure().map(str::to_string);
+    let farewell = app.capture_farewell();
     drop(app);
+    if let Some(farewell) = farewell {
+        eprintln!("{farewell}");
+    }
     result.map_err(|e| format!("terminal error: {e}"))?;
     match startup_failure {
         Some(reason) => Err(reason),
@@ -317,6 +369,11 @@ fn event_loop(app: &mut App, terminal: &mut Tui, rx: &mpsc::Receiver<Event>) -> 
         if app.quit {
             return Ok(());
         }
+        // Ctrl-z: hand the terminal back and stop, as any program does;
+        // `fg` brings everything back as it was.
+        if std::mem::take(&mut app.suspend) {
+            suspend(terminal, app.config.ui.mouse)?;
+        }
         // A capture file that cannot be opened at startup is an error to
         // report on exit, not a screen to sit on.
         if app.startup_failure().is_some() {
@@ -327,6 +384,95 @@ fn event_loop(app: &mut App, terminal: &mut Tui, rx: &mpsc::Receiver<Event>) -> 
         if signals::received() {
             return Ok(());
         }
+    }
+}
+
+/// Give the terminal back to the shell and stop until `fg`.
+fn suspend(terminal: &mut Tui, mouse: bool) -> io::Result<()> {
+    leave(mouse);
+    #[cfg(unix)]
+    // SAFETY: raising a signal for this process; SIGTSTP stops it until the
+    // shell continues it, and execution resumes on the next line.
+    unsafe {
+        libc::raise(libc::SIGTSTP);
+    }
+    // Back: set the terminal up again from nothing, as at startup. A fresh
+    // `Terminal` has no memory of what was on screen, so everything is
+    // drawn again; unlike `clear`, making one asks the terminal nothing.
+    *terminal = enter(mouse)?;
+    Ok(())
+}
+
+/// The time format for a `-t` code, in tshark's letters.
+fn time_format(code: &str) -> Result<TimeFormat, String> {
+    Ok(match code {
+        "r" => TimeFormat::Relative,
+        "d" => TimeFormat::Delta,
+        "dd" => TimeFormat::DeltaDisplayed,
+        "a" => TimeFormat::Absolute,
+        "ad" => TimeFormat::AbsoluteDate,
+        "u" => TimeFormat::Utc,
+        "ud" => TimeFormat::UtcDate,
+        other => {
+            return Err(format!(
+                "-t expects r, d, dd, a, ad, u or ud, not `{other}`"
+            ));
+        }
+    })
+}
+
+/// Run tshark in our place, for when the output is not a terminal. The
+/// options that mean the same to tshark are handed on.
+fn pass_through(cli: &Cli, sharkd: &std::path::Path, profile: Option<&str>) -> Result<(), String> {
+    let Some(tshark) = capture::locate_tool("tshark", sharkd) else {
+        return Err(
+            "packetshark is an interactive program and needs a terminal on stdout \
+                    (with tshark installed it would print the packets instead)"
+                .into(),
+        );
+    };
+    let mut cmd = std::process::Command::new(tshark);
+    match &cli.file {
+        Some(file) => {
+            cmd.arg("-r").arg(file);
+        }
+        None if cli.interfaces.is_empty() => {
+            cmd.arg("-r").arg("-");
+        }
+        None => {}
+    }
+    for interface in &cli.interfaces {
+        cmd.arg("-i").arg(interface);
+    }
+    let pairs = [
+        ("-f", cli.capture_filter.as_deref()),
+        ("-Y", cli.display_filter.as_deref()),
+        ("-C", profile),
+        ("-t", cli.time.as_deref()),
+    ];
+    for (flag, value) in pairs {
+        if let Some(value) = value {
+            cmd.arg(flag).arg(value);
+        }
+    }
+    if let Some(file) = &cli.write {
+        cmd.arg("-w").arg(file);
+    }
+    for pref in &cli.prefs {
+        cmd.arg("-o").arg(pref);
+    }
+    if let Some(keylog) = &cli.keylog {
+        cmd.arg("-o")
+            .arg(format!("tls.keylog_file:{}", keylog.display()));
+    }
+    let status = cmd
+        .status()
+        .map_err(|e| format!("could not run tshark: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        // tshark has said why itself.
+        std::process::exit(status.code().unwrap_or(1));
     }
 }
 

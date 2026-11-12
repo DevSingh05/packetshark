@@ -35,6 +35,13 @@ expand_all = false
 # A theme chosen with :theme while running takes over from this.
 # theme = "default"
 
+# A program to give copied text to, on its standard input, instead of asking
+# the terminal to set the clipboard. Useful where the terminal cannot:
+#   copy_command = ["pbcopy"]
+#   copy_command = ["xclip", "-selection", "clipboard"]
+#   copy_command = ["wl-copy"]
+copy_command = []
+
 # Draw with ASCII characters only. This happens by itself when the locale is
 # not UTF-8; set it for a terminal that claims UTF-8 and cannot show it.
 ascii = false

@@ -32,6 +32,9 @@ pub struct Ui {
     pub ascii: bool,
     /// Colour theme to start with, unless one was chosen with `:theme`.
     pub theme: Option<String>,
+    /// A program to hand copied text to on its standard input, with its
+    /// arguments, instead of asking the terminal to set the clipboard.
+    pub copy_command: Vec<String>,
 }
 
 impl Default for Ui {
@@ -44,6 +47,7 @@ impl Default for Ui {
             expand_all: false,
             ascii: false,
             theme: None,
+            copy_command: Vec::new(),
         }
     }
 }
