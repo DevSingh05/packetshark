@@ -22,7 +22,7 @@ jobs:
         os: [ubuntu-22.04, ubuntu-24.04, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -49,7 +49,7 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y tshark curl ca-certificates build-essential git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Check that sharkd is available
         run: sharkd -v
@@ -59,7 +59,7 @@ jobs:
     # Fails if a dependency has a known security advisory.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
@@ -68,16 +68,16 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.120
       - run: cargo check --all-targets
 
   format:
     # Formatting for everything that is not Rust: Markdown, YAML and TOML.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npx --yes prettier@3 --check "**/*.{md,yml,yaml}"
