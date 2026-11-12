@@ -120,6 +120,7 @@ impl App {
         self.find = None;
         self.overlay = None;
         self.capture_failure_reported = false;
+        self.sort = None;
         self.restart_tail();
         self.info("Capture started again; the earlier packets are gone.");
     }
@@ -1174,6 +1175,23 @@ impl App {
             return;
         }
         if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+            return;
+        }
+        if contains(areas.header, x, y) {
+            // A click on a column's title sorts by it; another reverses.
+            let left = areas.header.x + 1;
+            let cells = self
+                .columns
+                .layout(&self.list.widths, areas.header.width.saturating_sub(1));
+            let hit = cells
+                .iter()
+                .position(|(cx, w)| (left + cx..left + cx + w).contains(&x));
+            let title = hit
+                .and_then(|i| self.columns.cols.get(i))
+                .map(|c| c.title.clone());
+            if let Some(title) = title {
+                self.sort_by(&title, None);
+            }
             return;
         }
         if contains(areas.filter, x, y) {

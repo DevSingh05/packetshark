@@ -207,12 +207,14 @@ pub struct Intervals {
     pub frames: u32,
     #[serde(default)]
     pub bytes: u64,
-    /// `(index, packets, bytes)` for each interval that has packets.
+    /// `(index, packets, bytes)` for each interval that has packets. An
+    /// index counts from the first packet's time and is negative for a
+    /// packet stamped earlier than that; they come in no particular order.
     #[serde(default)]
-    pub intervals: Vec<(u64, u64, u64)>,
+    pub intervals: Vec<(i64, u64, u64)>,
     /// Index of the last interval.
     #[serde(default)]
-    pub last: u64,
+    pub last: i64,
 }
 
 /// One completion candidate from `complete`.

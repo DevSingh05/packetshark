@@ -12,6 +12,7 @@ pub mod help;
 pub mod keymap;
 pub mod list;
 pub mod search;
+pub mod sort;
 pub mod stats;
 
 mod commands;
@@ -238,6 +239,8 @@ impl Prompt {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Areas {
     pub filter: Rect,
+    /// The packet list's column titles.
+    pub header: Rect,
     /// Packet rows (without the column header).
     pub list: Rect,
     pub tree: Rect,
@@ -381,6 +384,8 @@ pub struct App {
     prefs: Vec<(String, String)>,
     /// Which sharkd is in use, counting from the first; see `Event::Engine`.
     engine: u64,
+    /// The column the packet list is sorted by, if it is.
+    sort: Option<sort::Sort>,
     /// "Decode As" rules added while running.
     pub decode_as: Vec<crate::wsconfig::DecodeAs>,
     /// The copy of the Wireshark configuration that holds those rules.
@@ -520,6 +525,7 @@ impl App {
             after_open_goto: None,
             prefs: options.prefs.clone(),
             engine: 0,
+            sort: None,
             decode_as: Vec::new(),
             engine_dir,
             folders,
@@ -922,6 +928,27 @@ impl App {
         if self.load != LoadState::Ready {
             return;
         }
+        if self.sort.is_some() {
+            // A sorted list asks for its rows by their place in the order,
+            // and for none until the order is known.
+            let Some(order) = self.sort_order() else {
+                return;
+            };
+            for page in self.list.pages_needed() {
+                let from = ((page * PAGE) as usize).min(order.rows.len());
+                let to = (from + PAGE as usize).min(order.rows.len());
+                let request = Request::FramesAt {
+                    generation: self.list.generation,
+                    filter: self.filter.applied.clone(),
+                    skip: page * PAGE,
+                    rows: order.rows[from..to].to_vec(),
+                    columns: self.columns.specs(self.time_format),
+                    refs: self.time_refs.iter().copied().collect(),
+                };
+                self.send(request);
+            }
+            return;
+        }
         for page in self.list.pages_needed() {
             let request = Request::Frames {
                 generation: self.list.generation,
@@ -979,6 +1006,8 @@ impl App {
         if self.tail.is_some() && at_end && total > 0 {
             self.list.select(total - 1);
         }
+        // The packets listed may have changed, and their order with them.
+        self.request_sort();
     }
 
     fn count_displayed(&mut self) {
@@ -1025,6 +1054,10 @@ impl App {
     }
 
     fn locate(&mut self, frame: u32, seek: Seek, purpose: Purpose) {
+        if self.sort.is_some() && purpose == Purpose::Select {
+            // A sorted list knows where its packets are.
+            return self.select_sorted(frame);
+        }
         if self.filter.applied.is_empty() && purpose == Purpose::Select {
             // No filter: packet N is row N-1.
             if frame >= 1 && self.list.total.is_some() {
@@ -1176,7 +1209,9 @@ impl App {
 
     /// Fetch the list again without changing what it contains.
     fn refresh_list(&mut self) {
+        let before = self.list.generation;
         self.list.refresh();
+        self.carry_sort(before);
         self.detail_requested = None;
         // A count that was still running belongs to the old generation and
         // its reply will be ignored; ask again.

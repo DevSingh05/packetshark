@@ -26,18 +26,41 @@ pub fn draw(app: &mut App, buf: &mut Buffer, area: Rect) {
         ..content
     };
     app.areas.list = rows;
+    app.areas.header = header;
     app.list.set_height(rows.height);
 
     const GUTTER: u16 = 1;
     let cells = app
         .columns
         .layout(&app.list.widths, content.width.saturating_sub(GUTTER));
+    let sorted = app
+        .sorted_by()
+        .map(|(title, down)| (title.to_string(), down));
     for (col, (x, w)) in app.columns.cols.iter().zip(&cells) {
         let x = content.x + GUTTER + x;
+        // The column sorted by carries an arrow, in place of the end of a
+        // title that fills its column.
+        let title = match &sorted {
+            Some((title, down)) if *title == col.title => {
+                let arrow = if *down { '▼' } else { '▲' };
+                let room = usize::from(*w).saturating_sub(1);
+                let mut kept = String::new();
+                for c in col.title.chars() {
+                    if crate::util::width(&kept) + crate::util::width(c.encode_utf8(&mut [0; 4]))
+                        > room
+                    {
+                        break;
+                    }
+                    kept.push(c);
+                }
+                format!("{kept}{arrow}")
+            }
+            _ => col.title.clone(),
+        };
         if col.align_right {
-            put_right(buf, x, header.y, *w, &col.title, app.theme.column_header);
+            put_right(buf, x, header.y, *w, &title, app.theme.column_header);
         } else {
-            put(buf, x, header.y, *w, &col.title, app.theme.column_header);
+            put(buf, x, header.y, *w, &title, app.theme.column_header);
         }
     }
 

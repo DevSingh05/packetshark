@@ -51,6 +51,7 @@ impl App {
                     Err(e) => self.list.page_failed(skip, e),
                 }
             }
+            Reply::Sorted { generation, result } => self.on_sorted(generation, result),
             Reply::Located {
                 generation,
                 purpose,
@@ -106,10 +107,13 @@ impl App {
                     graph.loading = false;
                     match result {
                         Ok((all, shown)) => {
-                            graph.all = super::graph::fill(&all.intervals, all.last);
+                            let (first, last) = super::graph::reach(&all.intervals, all.last);
+                            graph.first = first;
+                            graph.all = super::graph::fill(&all.intervals, first, last);
                             // The filtered series is as long as the whole
                             // one, so the two line up bar for bar.
-                            graph.shown = shown.map(|s| super::graph::fill(&s.intervals, all.last));
+                            graph.shown =
+                                shown.map(|s| super::graph::fill(&s.intervals, first, last));
                             graph.cursor = 0;
                         }
                         Err(e) => graph.error = Some(e),
@@ -252,7 +256,7 @@ impl App {
         }
     }
 
-    fn on_located(&mut self, result: Result<Option<(u32, u32)>, String>) {
+    pub(super) fn on_located(&mut self, result: Result<Option<(u32, u32)>, String>) {
         let asked = self.goto_exact.take();
         match result {
             Ok(Some((index, num))) => {

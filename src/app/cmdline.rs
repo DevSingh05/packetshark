@@ -69,6 +69,11 @@ pub const COMMANDS: &[Command] = &[
         "Start a live capture again, dropping its packets",
     ),
     cmd("set", "<pref> <value>", "Set a Wireshark preference"),
+    cmd(
+        "sort",
+        "[column] [desc]",
+        "Sort the packets by a column (off undoes)",
+    ),
     cmd("stat", "<name>", "A statistics tree"),
     cmd("stop", "", "Stop a live capture"),
     cmd("theme", "[name]", "Choose a colour theme"),
@@ -162,6 +167,13 @@ impl App {
             ["decode" | "decode-as"] => {
                 fixed(&["clear", "tcp.port", "udp.port", "ethertype", "ip.proto"])
             }
+            ["sort"] => self
+                .columns
+                .cols
+                .iter()
+                .map(|c| Candidate::plain(c.title.clone()))
+                .chain([Candidate::plain("off")])
+                .collect(),
             ["colors" | "colours"] => fixed(&["wireshark", "tint", "off"]),
             ["layout"] => fixed(&["stacked", "side"]),
             ["time"] => fixed(&[

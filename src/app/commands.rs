@@ -190,6 +190,8 @@ impl App {
                 self.info("Reloading.");
                 self.reload();
             }
+            "sort" => self.sort_command(arg),
+            "unsort" => self.clear_sort(),
             "stop" => self.stop_capture(),
             "restart" | "clear-packets" => self.restart_capture(),
             other => self.error(format!("Unknown command: {other}. Press ? for the list.")),

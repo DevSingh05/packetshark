@@ -177,6 +177,10 @@ pub const SECTIONS: &[Section] = &[
             (":follow [proto]", "Follow the selected packet's stream"),
             (":write <file>", "Save the displayed packets"),
             (":columns", "Arrange the columns: order, visibility, titles"),
+            (
+                ":sort [column] [desc]",
+                "Sort the packets by a column, or click its title (:sort off undoes)",
+            ),
             (":column <field> [title]", "Add a column showing a field"),
             (
                 ":column remove <name>",

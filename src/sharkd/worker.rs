@@ -72,6 +72,24 @@ pub enum Request {
         columns: Vec<String>,
         refs: Vec<u32>,
     },
+    /// Rows of the packet list picked out by their places among the frames
+    /// matching `filter`, in the order given: a page of a sorted list.
+    FramesAt {
+        generation: u64,
+        filter: String,
+        skip: u32,
+        rows: Vec<u32>,
+        columns: Vec<String>,
+        refs: Vec<u32>,
+    },
+    /// Work out the order of the frames matching `filter` when sorted by
+    /// what `column` shows for each.
+    Sort {
+        generation: u64,
+        filter: String,
+        column: String,
+        descending: bool,
+    },
     /// Find the position of a frame within the frames matching `filter`.
     Locate {
         generation: u64,
@@ -140,6 +158,10 @@ pub enum Reply {
         generation: u64,
         skip: u32,
         result: Result<Vec<FrameRow>, String>,
+    },
+    Sorted {
+        generation: u64,
+        result: Result<Sorted, String>,
     },
     Located {
         generation: u64,
@@ -427,6 +449,30 @@ impl Runner {
                     result,
                 }
             }
+            Request::FramesAt {
+                generation,
+                filter,
+                skip,
+                rows,
+                columns,
+                refs,
+            } => {
+                let result = soft(self.frames_at(&filter, &rows, &columns, &refs))?;
+                Reply::Frames {
+                    generation,
+                    skip,
+                    result,
+                }
+            }
+            Request::Sort {
+                generation,
+                filter,
+                column,
+                descending,
+            } => {
+                let result = soft(self.sort(&filter, &column, descending))?;
+                Reply::Sorted { generation, result }
+            }
             Request::Locate {
                 generation,
                 filter,
@@ -656,6 +702,59 @@ impl Runner {
 
     /// The numbers of up to `limit` displayed frames, starting at `index` of
     /// the displayed list.
+    /// The rows at the given places among the frames matching `filter`.
+    /// Places that follow one another are read together.
+    fn frames_at(
+        &mut self,
+        filter: &str,
+        rows: &[u32],
+        columns: &[String],
+        refs: &[u32],
+    ) -> Result<Vec<FrameRow>, Error> {
+        let mut found = Vec::with_capacity(rows.len());
+        let mut at = 0;
+        while at < rows.len() {
+            let first = rows[at];
+            let mut run = 1;
+            while at + run < rows.len() && rows[at + run] == first + run as u32 {
+                run += 1;
+            }
+            let mut params = Map::new();
+            if !filter.is_empty() {
+                params.insert("filter".into(), cache_key(filter, self.loads).into());
+            }
+            if first > 0 {
+                params.insert("skip".into(), first.into());
+            }
+            params.insert("limit".into(), run.into());
+            for (i, c) in columns.iter().enumerate() {
+                params.insert(format!("column{i}"), c.as_str().into());
+            }
+            if !refs.is_empty() {
+                let list: Vec<String> = refs.iter().map(u32::to_string).collect();
+                params.insert("refs".into(), list.join(",").into());
+            }
+            let part: Vec<FrameRow> = self.client.call("frames", Value::Object(params))?;
+            found.extend(part);
+            at += run;
+        }
+        Ok(found)
+    }
+
+    fn sort(&mut self, filter: &str, column: &str, descending: bool) -> Result<Sorted, Error> {
+        let mut params = Map::new();
+        if !filter.is_empty() {
+            params.insert("filter".into(), cache_key(filter, self.loads).into());
+        }
+        params.insert("column0".into(), column.into());
+        let rows: Vec<FrameRow> = self.client.call("frames", Value::Object(params))?;
+        let keys = rows
+            .into_iter()
+            .map(|mut row| (row.num, row.cols.pop().unwrap_or_default()))
+            .collect();
+        Ok(sort_rows(keys, descending))
+    }
+
     fn frame_numbers(&mut self, filter: &str, index: u32, limit: u32) -> Result<Vec<u32>, Error> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -850,9 +949,16 @@ fn failure(request: Request, reason: String) -> Reply {
         },
         Request::Frames {
             generation, skip, ..
+        }
+        | Request::FramesAt {
+            generation, skip, ..
         } => Reply::Frames {
             generation,
             skip,
+            result: Err(reason),
+        },
+        Request::Sort { generation, .. } => Reply::Sorted {
+            generation,
             result: Err(reason),
         },
         Request::Locate {
@@ -940,6 +1046,8 @@ fn mark_superseded(queue: &VecDeque<Request>) -> Vec<bool> {
             // List requests for an outdated filter or file.
             Request::Count { generation, .. }
             | Request::Frames { generation, .. }
+            | Request::FramesAt { generation, .. }
+            | Request::Sort { generation, .. }
             | Request::Locate { generation, .. }
             | Request::SearchDetails { generation, .. } => Some(*generation) < newest_generation,
             _ => false,
@@ -951,14 +1059,128 @@ fn generation_of(r: &Request) -> Option<u64> {
     match r {
         Request::Count { generation, .. }
         | Request::Frames { generation, .. }
+        | Request::FramesAt { generation, .. }
+        | Request::Sort { generation, .. }
         | Request::Locate { generation, .. }
         | Request::SearchDetails { generation, .. } => Some(*generation),
         _ => None,
     }
 }
 
+/// A sorted packet list: for each row from the top, the packet's place
+/// among the displayed frames in capture order, and its frame number.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Sorted {
+    pub rows: Vec<u32>,
+    pub nums: Vec<u32>,
+}
+
+/// Sort packets, given in capture order as `(frame number, value)`, by
+/// their values. A column in which every value is a number sorts as
+/// numbers; any other sorts as text, with runs of digits compared as
+/// numbers so that 10.0.0.9 comes before 10.0.0.10. Packets with equal
+/// values stay in capture order, and those with no value come first.
+pub fn sort_rows(keys: Vec<(u32, String)>, descending: bool) -> Sorted {
+    use std::cmp::Ordering;
+    let numbers: Option<Vec<Option<f64>>> = keys
+        .iter()
+        .map(|(_, text)| {
+            let text = text.trim();
+            if text.is_empty() {
+                Some(None)
+            } else {
+                text.parse::<f64>().ok().filter(|n| !n.is_nan()).map(Some)
+            }
+        })
+        .collect();
+    let mut order: Vec<u32> = (0..keys.len() as u32).collect();
+    let compare = |a: &u32, b: &u32| -> Ordering {
+        let (a, b) = (*a as usize, *b as usize);
+        match &numbers {
+            Some(n) => match (n[a], n[b]) {
+                (Some(x), Some(y)) => x.total_cmp(&y),
+                (x, y) => x.is_some().cmp(&y.is_some()),
+            },
+            None => natural(&keys[a].1, &keys[b].1),
+        }
+    };
+    if descending {
+        order.sort_by(|a, b| compare(b, a));
+    } else {
+        order.sort_by(compare);
+    }
+    Sorted {
+        nums: order.iter().map(|i| keys[*i as usize].0).collect(),
+        rows: order,
+    }
+}
+
+/// Compare text the way a person would: without regard to case, and with
+/// runs of digits by their value.
+fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let (mut a, mut b) = (a.as_bytes(), b.as_bytes());
+    let digits = |s: &[u8]| s.iter().take_while(|c| c.is_ascii_digit()).count();
+    loop {
+        match (a.first(), b.first()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let (na, nb) = (digits(a), digits(b));
+                let strip = |s: &[u8]| s.iter().take_while(|c| **c == b'0').count();
+                let (xa, xb) = (&a[strip(&a[..na])..na], &b[strip(&b[..nb])..nb]);
+                let by_value = xa.len().cmp(&xb.len()).then_with(|| xa.cmp(xb));
+                if by_value != Ordering::Equal {
+                    return by_value;
+                }
+                (a, b) = (&a[na..], &b[nb..]);
+            }
+            (Some(x), Some(y)) => {
+                let by_letter = x.to_ascii_lowercase().cmp(&y.to_ascii_lowercase());
+                if by_letter != Ordering::Equal {
+                    return by_letter;
+                }
+                (a, b) = (&a[1..], &b[1..]);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rows_sort_as_numbers_or_as_text() {
+        use super::{Sorted, sort_rows};
+        let keys = |values: &[&str]| -> Vec<(u32, String)> {
+            values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i as u32 * 10 + 10, (*v).to_string()))
+                .collect()
+        };
+        // Numbers by value, not by their digits; equal ones in capture
+        // order; none at all first.
+        let lengths = sort_rows(keys(&["100", "9", "", "54", "9", "1500.5"]), false);
+        assert_eq!(lengths.rows, [2, 1, 4, 3, 0, 5]);
+        assert_eq!(lengths.nums, [30, 20, 50, 40, 10, 60]);
+        let down = sort_rows(keys(&["100", "9", "", "54", "9", "1500.5"]), true);
+        assert_eq!(down.rows, [5, 0, 3, 1, 4, 2], "ties stay in capture order");
+        // Addresses: each number in them counts as a number.
+        let hosts = sort_rows(
+            keys(&["10.0.0.10", "10.0.0.9", "9.9.9.9", "10.0.0.09"]),
+            false,
+        );
+        assert_eq!(hosts.rows, [2, 1, 3, 0]);
+        // Text without regard to case.
+        let names = sort_rows(keys(&["TCP", "dns", "ARP", "http", "DNS"]), false);
+        assert_eq!(names.rows, [2, 1, 4, 3, 0]);
+        // One value that is not a number makes the column text.
+        let mixed = sort_rows(keys(&["80", "443", "http"]), false);
+        assert_eq!(mixed.rows, [0, 1, 2]);
+        assert_eq!(sort_rows(Vec::new(), false), Sorted::default());
+    }
+
     use super::*;
 
     #[test]

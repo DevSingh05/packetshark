@@ -17,6 +17,9 @@ pub struct IoGraph {
     pub interval_ms: u64,
     /// Every packet, bucket by bucket from the start of the capture.
     pub all: Vec<Bucket>,
+    /// Which bucket `all` starts with, counting from the first packet's
+    /// time: zero, unless packets are stamped earlier than the first.
+    pub first: i64,
     /// The packets the display filter shows, if one is applied.
     pub shown: Option<Vec<Bucket>>,
     /// The display filter the `shown` series was counted with.
@@ -67,18 +70,29 @@ pub fn step_interval(interval_ms: u64, finer: bool) -> u64 {
     ladder[next]
 }
 
+/// The first and last bucket that `intervals` reach. The first is before
+/// zero when a capture holds packets stamped earlier than its first one.
+pub fn reach(intervals: &[(i64, u64, u64)], last: i64) -> (i64, i64) {
+    let indexes = || intervals.iter().map(|(index, _, _)| *index);
+    let first = indexes().min().unwrap_or(0).min(0);
+    let last = indexes().max().unwrap_or(0).max(last).max(0);
+    (first, last)
+}
+
 /// Lay sharkd's sparse list of `(index, packets, bytes)` out as one bucket
-/// per interval, up to `last`.
-pub fn fill(intervals: &[(u64, u64, u64)], last: u64) -> Vec<Bucket> {
+/// per interval, from `first` to `last`.
+pub fn fill(intervals: &[(i64, u64, u64)], first: i64, last: i64) -> Vec<Bucket> {
     // A reply naming an absurd last bucket must not allocate the earth.
-    let len = (last.saturating_add(1)).min(1_000_000) as usize;
+    let len = last
+        .saturating_sub(first)
+        .saturating_add(1)
+        .clamp(1, 1_000_000) as usize;
     let mut buckets = vec![Bucket::default(); len];
     for (index, packets, bytes) in intervals {
-        if let Some(bucket) = buckets.get_mut(*index as usize) {
-            *bucket = Bucket {
-                packets: *packets,
-                bytes: *bytes,
-            };
+        let at = usize::try_from(index.saturating_sub(first)).ok();
+        if let Some(bucket) = at.and_then(|at| buckets.get_mut(at)) {
+            bucket.packets += packets;
+            bucket.bytes += bytes;
         }
     }
     buckets
@@ -115,9 +129,10 @@ impl IoGraph {
     pub fn span(&self, bar: usize) -> (f64, f64) {
         let per_bar = self.per_bar() as f64;
         let seconds = self.interval_ms as f64 / 1000.0;
+        let start = self.first as f64 * seconds;
         (
-            bar as f64 * per_bar * seconds,
-            (bar as f64 + 1.0) * per_bar * seconds,
+            start + bar as f64 * per_bar * seconds,
+            start + (bar as f64 + 1.0) * per_bar * seconds,
         )
     }
 
@@ -184,7 +199,7 @@ mod tests {
 
     #[test]
     fn sparse_intervals_become_a_bucket_each() {
-        let buckets = fill(&[(0, 2, 168), (2, 3, 244)], 3);
+        let buckets = fill(&[(0, 2, 168), (2, 3, 244)], 0, 3);
         assert_eq!(buckets.len(), 4);
         assert_eq!(
             buckets[0],
@@ -197,10 +212,34 @@ mod tests {
         assert_eq!(buckets[2].packets, 3);
         assert_eq!(buckets[3], Bucket::default());
         assert_eq!(
-            fill(&[(9, 1, 1)], 2).len(),
+            fill(&[(9, 1, 1)], 0, 2).len(),
             3,
             "an index past the end is dropped"
         );
+        // Packets stamped before the first one have negative indexes, and
+        // indexes come in any order; the chart then starts before zero.
+        let jumbled = [(0, 12, 100), (3, 1, 10), (-2, 7, 70), (3, 2, 20)];
+        assert_eq!(reach(&jumbled, 3), (-2, 3));
+        let buckets = fill(&jumbled, -2, 3);
+        assert_eq!(buckets.len(), 6);
+        assert_eq!(buckets[0].packets, 7);
+        assert_eq!(buckets[2].packets, 12);
+        assert_eq!(
+            buckets[5],
+            Bucket {
+                packets: 3,
+                bytes: 30
+            }
+        );
+        assert_eq!(reach(&[], 0), (0, 0));
+        let early = IoGraph {
+            interval_ms: 1000,
+            all: buckets,
+            first: -2,
+            columns: 80,
+            ..Default::default()
+        };
+        assert_eq!(early.span(0), (-2.0, -1.0));
     }
 
     #[test]

@@ -218,9 +218,23 @@ pub fn graph(app: &mut App, buf: &mut Buffer, area: Rect) {
     // Times along the bottom: the start, the middle and the end.
     let axis = chart.y + chart.height;
     let (_, end) = graph.span(bars.len().saturating_sub(1));
-    let seconds = |s: f64| crate::util::human_duration(s);
+    // Times count from the first packet, and are negative for packets
+    // stamped earlier than it.
+    let seconds = |s: f64| {
+        if s < 0.0 {
+            format!("-{}", crate::util::human_duration(-s))
+        } else {
+            crate::util::human_duration(s)
+        }
+    };
     if graph.cursor != 0 {
-        put(buf, chart.x, axis, chart.width, "0", dim);
+        let (start, _) = graph.span(0);
+        let label = if start < 0.0 {
+            seconds(start)
+        } else {
+            "0".to_string()
+        };
+        put(buf, chart.x, axis, chart.width, &label, dim);
     }
     let last = seconds(end);
     let drawn = (bars.len() as u16 * bar_width).min(chart.width);

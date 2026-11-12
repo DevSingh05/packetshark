@@ -3332,3 +3332,107 @@ fn only_a_live_capture_can_be_started_again() {
         "nothing happened to the file that is open"
     );
 }
+
+/// Packets of assorted sizes from assorted hosts, to sort.
+fn assorted() -> pcap::Pcap {
+    let mut capture = pcap::Pcap::new();
+    let hosts = [[10, 0, 0, 10], [10, 0, 0, 9], [9, 9, 9, 9], [10, 0, 0, 9]];
+    for (i, len) in [300usize, 20, 1000, 20, 150, 7, 600, 45].iter().enumerate() {
+        let host = hosts[i % hosts.len()];
+        capture.udp(
+            false,
+            std::net::Ipv4Addr::from(host),
+            5000,
+            6000 + i as u16,
+            &vec![b'x'; *len],
+        );
+    }
+    capture
+}
+
+#[test]
+fn the_packet_list_can_be_sorted_by_a_column() {
+    let Some(mut h) = Harness::open_with(&assorted(), 110, 30, Options::default()) else {
+        return;
+    };
+    let numbers = |h: &mut Harness| -> Vec<u32> {
+        (0..h.app.list.len())
+            .map(|i| h.app.list.fresh_row(i).map_or(0, |r| r.num))
+            .collect()
+    };
+    h.keys("jj");
+    assert_eq!(h.app.list.selected_num(), Some(3));
+
+    // By length: as numbers, ties in capture order, cursor on its packet.
+    h.keys(":sort length\n");
+    assert_eq!(numbers(&mut h), [6, 2, 4, 8, 5, 1, 7, 3]);
+    assert_eq!(h.app.list.selected_num(), Some(3));
+    assert_eq!(h.app.list.selected, 7);
+    assert!(h.line(2).contains("Lengt▲"), "{}", h.line(2));
+    assert!(
+        h.message().contains("Sorted by Length, ascending"),
+        "{}",
+        h.message()
+    );
+    h.assert_screen_contains("Frame 3:");
+
+    // The same column again turns it round; moving follows what is seen.
+    h.keys(":sort Length\n");
+    assert_eq!(numbers(&mut h), [3, 7, 1, 5, 8, 2, 4, 6]);
+    assert!(h.line(2).contains("Lengt▼"), "{}", h.line(2));
+    assert_eq!(h.app.list.selected, 0);
+    h.keys("j");
+    assert_eq!(h.app.list.selected_num(), Some(7));
+    h.assert_screen_contains("Frame 7:");
+
+    // Addresses sort number by number.
+    h.keys(":sort source asc\n");
+    assert_eq!(numbers(&mut h), [3, 7, 2, 4, 6, 8, 1, 5]);
+    assert_eq!(h.app.list.selected_num(), Some(7));
+
+    // Going to a packet by number finds it where it now is.
+    h.keys(":4\n");
+    assert_eq!(h.app.list.selected_num(), Some(4));
+    assert_eq!(h.app.list.selected, 3);
+
+    // A filter keeps the sort, and the cursor on its packet.
+    h.keys(":sort length desc\n");
+    h.keys("/udp.length < 200\n");
+    assert_eq!(numbers(&mut h), [5, 8, 2, 4, 6]);
+    assert_eq!(h.app.list.selected_num(), Some(4));
+    h.keys(":clear\n");
+    assert_eq!(numbers(&mut h), [3, 7, 1, 5, 8, 2, 4, 6]);
+    assert_eq!(h.app.list.selected_num(), Some(4));
+
+    // The menu lists the columns and marks the one in use.
+    h.keys(":sort\n");
+    h.assert_screen_contains("Sort the packets by");
+    h.assert_screen_contains("Length  (sorted, descending; again to reverse)");
+    h.assert_screen_contains("Capture order (no sorting)");
+    h.keys("-");
+    assert_eq!(numbers(&mut h), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(h.app.list.selected_num(), Some(4));
+    assert!(!h.line(2).contains('▼'), "{}", h.line(2));
+    assert!(h.app.sorted_by().is_none());
+
+    // A column that is not there.
+    h.keys(":sort nosuch\n");
+    assert!(
+        h.message().contains("no column called nosuch"),
+        "{}",
+        h.message()
+    );
+    assert!(h.app.sorted_by().is_none());
+
+    // A click on a column's title sorts by it.
+    let x = h.line(2).find("Length").unwrap() as u16;
+    h.click(x + 1, 2);
+    assert_eq!(h.app.sorted_by(), Some(("Length", false)));
+    assert_eq!(numbers(&mut h), [6, 2, 4, 8, 5, 1, 7, 3]);
+    h.click(x + 1, 2);
+    assert_eq!(h.app.sorted_by(), Some(("Length", true)));
+
+    // Reloading keeps the order.
+    h.keys(":reload\n");
+    assert_eq!(numbers(&mut h), [3, 7, 1, 5, 8, 2, 4, 6]);
+}
