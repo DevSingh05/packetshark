@@ -1840,3 +1840,70 @@ fn columns_can_be_added_and_removed() {
     assert!(h.message().contains("Wireshark profile"), "{}", h.message());
     h.assert_screen_contains("40000 → 80");
 }
+
+#[test]
+fn expert_information_groups_messages_and_leads_to_their_packets() {
+    // One connection: one SYN, and a FIN from each side.
+    let mut capture = pcap::Pcap::new();
+    capture.http(40000, "example.com", "/index.html", "hello world");
+    let Some(mut h) = Harness::open(&capture) else {
+        return;
+    };
+    let total = h.app.frames();
+    h.keys(":expert\n");
+    h.assert_screen_contains("Expert information");
+    let (_, header) = h.find_line("Severity").unwrap();
+    assert!(
+        header.contains("Count") && header.contains("First"),
+        "{header}"
+    );
+    // The two FINs of the connection are one line with a count of two.
+    let screen = h.screen();
+    assert_eq!(
+        screen.matches("Connection finish (FIN)").count(),
+        1,
+        "{screen}"
+    );
+    let select = |h: &mut Harness, message: &str| {
+        for _ in 0..12 {
+            let on_it = match &h.app.overlay {
+                Some(Overlay::Stats(view)) => view
+                    .selected_row()
+                    .is_some_and(|r| r.cells.last().is_some_and(|c| c == message)),
+                _ => false,
+            };
+            if on_it {
+                return;
+            }
+            h.keys("j");
+        }
+        panic!("no row for {message}:\n{}", h.screen());
+    };
+
+    // Enter on a message seen several times lists the packets that carry it.
+    select(&mut h, "Connection finish (FIN)");
+    let count: u32 = match &h.app.overlay {
+        Some(Overlay::Stats(view)) => view.selected_row().unwrap().cells[3].parse().unwrap(),
+        _ => unreachable!(),
+    };
+    assert_eq!(count, 2, "a FIN from each side");
+    h.key(KeyCode::Enter);
+    assert_eq!(
+        h.app.filter.applied,
+        r#"_ws.expert.message == "Connection finish (FIN)""#
+    );
+    let wanted = format!("{count} of {total} packets");
+    assert!(h.line(1).contains(&wanted), "{}", h.line(1));
+
+    // Enter on one seen once goes straight to its packet.
+    h.keys("x:expert\n");
+    select(&mut h, "Connection establish request (SYN): server port 80");
+    let first = match &h.app.overlay {
+        Some(Overlay::Stats(view)) => view.selected_row().unwrap().frame.unwrap(),
+        _ => unreachable!(),
+    };
+    h.key(KeyCode::Enter);
+    assert!(h.app.overlay.is_none());
+    assert_eq!(h.app.filter.applied, "");
+    assert_eq!(h.app.list.selected_num(), Some(first));
+}

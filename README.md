@@ -103,6 +103,29 @@ packetshark                                   # choose an interface from a list
 
 Press `?` inside packetshark for the keys. `packetshark --help` lists the options.
 
+### A worked example: "the app is slow and sometimes fails"
+
+You have a capture taken while it was happening. Four moves find most
+network problems:
+
+1. **`S` then `x`: expert information.** Wireshark's own list of what looked
+   wrong, most serious first, each message once with a count. Retransmissions,
+   resets and unanswered DNS queries show up here. Press Enter on a line to
+   list the packets behind it.
+2. **`S` then `c`: conversations.** Press `o` to sort by duration or bytes.
+   A connection that lasted seconds and carried nothing back is a port that
+   is being dropped.
+3. **Filter for failures and add the timing as a column.**
+   `/http.response.code >= 400` lists the errors, and `:column http.time`
+   shows how long each took to arrive. For DNS, `/dns` with
+   `:column dns.time`.
+4. **`F` on a suspicious packet** follows its whole stream, so you can read
+   what was actually said before it broke.
+
+When you have found it, a filter such as
+`tcp.analysis.retransmission || tcp.flags.reset == 1` followed by
+`:write evidence.pcapng` saves just those packets to send to someone else.
+
 ### Live capture permissions
 
 Capturing needs access to the network devices, which packetshark leaves to

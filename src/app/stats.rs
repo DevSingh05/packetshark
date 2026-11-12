@@ -39,7 +39,7 @@ impl Kind {
     pub fn enter_hint(self) -> &'static str {
         match self {
             Kind::Conversations | Kind::Endpoints | Kind::Hierarchy => "filter",
-            Kind::Expert => "go to packet",
+            Kind::Expert => "show packets",
             Kind::Objects => "save",
             Kind::Tree => "",
         }
@@ -428,20 +428,46 @@ impl StatsView {
                     col("Severity"),
                     col("Group"),
                     col("Protocol"),
-                    num("Packet"),
+                    num("Count"),
+                    num("First"),
                     col("Summary"),
                 ];
-                // Most serious first, then in capture order.
-                details.sort_by_key(|d| (severity_rank(d.severity.as_deref()), d.frame));
+                // One row per distinct message, as in Wireshark's dialog: a
+                // capture has thousands of routine notes and the few lines
+                // that matter must not be lost among them.
+                struct Group {
+                    item: crate::sharkd::types::ExpertItem,
+                    count: u32,
+                }
+                let mut groups: Vec<Group> = Vec::new();
+                let mut index: std::collections::HashMap<(Option<String>, String), usize> =
+                    std::collections::HashMap::new();
+                details.sort_by_key(|d| d.frame);
                 for d in details {
+                    let key = (d.severity.clone(), d.message.clone());
+                    if let Some(&i) = index.get(&key) {
+                        groups[i].count += 1;
+                    } else {
+                        index.insert(key, groups.len());
+                        groups.push(Group { item: d, count: 1 });
+                    }
+                }
+                // Most serious first, then in capture order.
+                groups.sort_by_key(|g| (severity_rank(g.item.severity.as_deref()), g.item.frame));
+                for Group { item: d, count } in groups {
                     let severity = d.severity.clone().unwrap_or_default();
-                    let group = d.group.clone().unwrap_or_default();
-                    let protocol = d.protocol.clone().unwrap_or_default();
+                    // Enter on a message seen once goes to its packet; on one
+                    // seen many times it lists the packets that carry it.
+                    let filter = (count > 1).then(|| {
+                        let quoted = d.message.replace('\\', "\\\\").replace('"', "\\\"");
+                        format!("_ws.expert.message == \"{quoted}\"")
+                    });
                     self.rows.push(Row {
                         cells: vec![
                             severity.clone(),
-                            group.clone(),
-                            protocol.clone(),
+                            d.group.clone().unwrap_or_default(),
+                            d.protocol.clone().unwrap_or_default(),
+                            thousands(u64::from(count)),
                             d.frame.to_string(),
                             d.message.clone(),
                         ],
@@ -449,9 +475,11 @@ impl StatsView {
                             Key::Num(f64::from(severity_rank(d.severity.as_deref()))),
                             Key::Text,
                             Key::Text,
+                            Key::Num(f64::from(count)),
                             Key::Num(f64::from(d.frame)),
                             Key::Text,
                         ],
+                        filter,
                         frame: Some(d.frame),
                         severity: Some(severity),
                         ..Default::default()
@@ -711,26 +739,47 @@ mod tests {
     }
 
     #[test]
-    fn expert_items_are_ordered_by_severity_then_packet() {
-        let item = |frame, severity: &str| ExpertItem {
+    fn expert_items_are_grouped_by_message_and_ordered_by_severity() {
+        let item = |frame, severity: &str, message: &str| ExpertItem {
             frame,
             severity: Some(severity.into()),
             group: Some("Sequence".into()),
-            message: format!("m{frame}"),
+            message: message.into(),
             protocol: Some("TCP".into()),
         };
         let mut v = StatsView::new(Kind::Expert, vec![], 0);
         v.set_result(Ok(vec![Tap::Expert {
             details: vec![
-                item(9, "Chat"),
-                item(4, "Error"),
-                item(2, "Warn"),
-                item(1, "Chat"),
+                item(9, "Chat", "Connection finish (FIN)"),
+                item(4, "Error", "Bad checksum"),
+                item(7, "Warn", "said \"no\" \\ twice"),
+                item(2, "Warn", "said \"no\" \\ twice"),
+                item(1, "Chat", "Connection finish (FIN)"),
+                item(3, "Chat", "Connection finish (FIN)"),
             ]
             .into(),
         }]));
-        let frames: Vec<u32> = v.rows.iter().filter_map(|r| r.frame).collect();
-        assert_eq!(frames, [4, 2, 1, 9]);
+        let rows: Vec<(u32, &str, &str)> = v
+            .rows
+            .iter()
+            .map(|r| (r.frame.unwrap(), r.cells[3].as_str(), r.cells[5].as_str()))
+            .collect();
+        // Most serious first; each message once, with its count and the
+        // first packet that carries it.
+        assert_eq!(
+            rows,
+            [
+                (4, "1", "Bad checksum"),
+                (2, "2", "said \"no\" \\ twice"),
+                (1, "3", "Connection finish (FIN)"),
+            ]
+        );
+        // A single occurrence is a place to go; several are a list to show.
+        assert_eq!(v.rows[0].filter, None);
+        assert_eq!(
+            v.rows[1].filter.as_deref(),
+            Some(r#"_ws.expert.message == "said \"no\" \\ twice""#)
+        );
     }
 
     #[test]

@@ -6,6 +6,12 @@ Notable changes to packetshark. The format follows
 
 ## Unreleased
 
+### Changed
+
+- Expert information lists each message once, with a count and the first
+  packet that carries it, as Wireshark's own dialog does. Enter on a message
+  seen many times lists its packets; on one seen once it goes to the packet.
+
 ## 0.1.0 - 2026-11-12
 
 The first release.
