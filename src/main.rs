@@ -169,13 +169,22 @@ fn run(cli: Cli) -> Result<(), String> {
     let stdin_piped = !io::stdin().is_terminal();
     let from_stdin = cli.file.as_deref().is_some_and(|f| f.as_os_str() == "-")
         || (cli.file.is_none() && cli.interfaces.is_empty() && stdin_piped);
-    let (source, title, tail, capture) = if !cli.interfaces.is_empty() {
+    let mut interfaces = cli.interfaces.clone();
+    // Started with nothing to open, at a terminal: offer the interfaces.
+    if interfaces.is_empty() && cli.file.is_none() && !from_stdin && io::stdout().is_terminal() {
+        match choose_interface(&sharkd_path) {
+            Choice::Interface(name) => interfaces.push(name),
+            Choice::Nothing => return Ok(()),
+            Choice::Unavailable => {}
+        }
+    }
+    let (source, title, tail, capture) = if !interfaces.is_empty() {
         if cli.file.is_some() {
             return Err("give either a file or -i <interface>, not both".into());
         }
         let dumpcap = dumpcap(&sharkd_path)?;
-        let capture = Capture::live(&dumpcap, &cli.interfaces, cli.capture_filter.as_deref())?;
-        let title = format!("{} (live)", cli.interfaces.join(", "));
+        let capture = Capture::live(&dumpcap, &interfaces, cli.capture_filter.as_deref())?;
+        let title = format!("{} (live)", interfaces.join(", "));
         (capture.path().to_path_buf(), title, true, Some(capture))
     } else if from_stdin {
         if !stdin_piped {
@@ -367,6 +376,50 @@ fn leave(mouse: bool) {
         cursor::Show
     );
     let _ = disable_raw_mode();
+}
+
+enum Choice {
+    Interface(String),
+    /// The user declined.
+    Nothing,
+    /// There is nothing to choose from; fall back to the usage message.
+    Unavailable,
+}
+
+/// List the capture interfaces and ask which one to capture from.
+fn choose_interface(sharkd: &std::path::Path) -> Choice {
+    let Ok(interfaces) = dumpcap(sharkd).and_then(|d| capture::list_interfaces(&d)) else {
+        return Choice::Unavailable;
+    };
+    println!("Nothing to open. To read a file: packetshark capture.pcapng\n");
+    println!("Capture interfaces:");
+    for (n, interface) in interfaces.iter().enumerate() {
+        if interface.description.is_empty() {
+            println!("  {:>2}  {}", n + 1, interface.name);
+        } else {
+            println!(
+                "  {:>2}  {}  ({})",
+                n + 1,
+                interface.name,
+                interface.description
+            );
+        }
+    }
+    loop {
+        print!("\nCapture from which? Number or name, or Enter for none: ");
+        let _ = io::stdout().flush();
+        let mut answer = String::new();
+        match io::stdin().read_line(&mut answer) {
+            // End of input.
+            Ok(0) | Err(_) => return Choice::Nothing,
+            Ok(_) => {}
+        }
+        match capture::pick_interface(&answer, &interfaces) {
+            Ok(Some(name)) => return Choice::Interface(name),
+            Ok(None) => return Choice::Nothing,
+            Err(problem) => println!("{problem}"),
+        }
+    }
 }
 
 fn dumpcap(sharkd: &std::path::Path) -> Result<PathBuf, String> {

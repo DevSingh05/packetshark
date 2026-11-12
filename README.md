@@ -75,6 +75,7 @@ ssh host tcpdump -U -w - | packetshark -      # capture on another machine
 packetshark --tail growing.pcap               # follow a file being written
 packetshark --keylog keys.log tls.pcapng      # decrypt TLS
 packetshark -D                                # list capture interfaces
+packetshark                                   # choose an interface from a list
 ```
 
 Press `?` inside packetshark for the keys. `packetshark --help` lists the options.

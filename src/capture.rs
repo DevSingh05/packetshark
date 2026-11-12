@@ -40,7 +40,9 @@ pub fn parse_interfaces(output: &str) -> Vec<Interface> {
             let (index, rest) = line.trim().split_once(". ")?;
             index.parse::<u32>().ok()?;
             let (name, description) = match rest.split_once(" (") {
-                Some((n, d)) => (n, d.trim_end_matches(')')),
+                // Only the bracket that closes the description: it may hold
+                // brackets of its own, as in "Ethernet Adapter (en3)".
+                Some((n, d)) => (n, d.strip_suffix(')').unwrap_or(d)),
                 None => (rest, ""),
             };
             Some(Interface {
@@ -76,6 +78,29 @@ pub fn list_interfaces(dumpcap: &Path) -> Result<Vec<Interface>, String> {
         ));
     }
     Ok(interfaces)
+}
+
+/// What the user meant by their answer to "capture from which interface?":
+/// a number from the list, or an interface's name. `Ok(None)` is an empty
+/// answer, which means "none, thanks".
+pub fn pick_interface(answer: &str, interfaces: &[Interface]) -> Result<Option<String>, String> {
+    let answer = answer.trim();
+    if answer.is_empty() || answer.eq_ignore_ascii_case("q") {
+        return Ok(None);
+    }
+    if let Ok(n) = answer.parse::<usize>() {
+        return match n.checked_sub(1).and_then(|i| interfaces.get(i)) {
+            Some(interface) => Ok(Some(interface.name.clone())),
+            None => Err(format!(
+                "there is no interface {n}; choose 1 to {}",
+                interfaces.len()
+            )),
+        };
+    }
+    match interfaces.iter().find(|i| i.name == answer) {
+        Some(interface) => Ok(Some(interface.name.clone())),
+        None => Err(format!("there is no interface called {answer}")),
+    }
 }
 
 enum Producer {
@@ -311,6 +336,23 @@ fn dumpcap_args(interfaces: &[String], capture_filter: Option<&str>, path: &Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interface_is_picked_by_number_or_name() {
+        let interfaces = parse_interfaces("1. en0 (Wi-Fi)\n2. lo0 (Loopback)\n");
+        let nested = parse_interfaces("15. en3 (Ethernet Adapter (en3))\n");
+        assert_eq!(nested[0].name, "en3");
+        assert_eq!(nested[0].description, "Ethernet Adapter (en3)");
+        let pick = |answer: &str| pick_interface(answer, &interfaces);
+        assert_eq!(pick("1"), Ok(Some("en0".to_string())));
+        assert_eq!(pick(" 2\n"), Ok(Some("lo0".to_string())));
+        assert_eq!(pick("lo0"), Ok(Some("lo0".to_string())));
+        assert_eq!(pick(""), Ok(None));
+        assert_eq!(pick("q"), Ok(None));
+        assert!(pick("0").unwrap_err().contains("choose 1 to 2"));
+        assert!(pick("3").is_err());
+        assert!(pick("eth9").unwrap_err().contains("eth9"));
+    }
 
     #[test]
     fn parses_interface_list() {
