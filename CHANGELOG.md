@@ -6,6 +6,8 @@ Notable changes to packetshark. The format follows
 
 ## Unreleased
 
+## 0.1.1 - 2026-11-12
+
 ### Changed
 
 - Expert information lists each message once, with a count and the first
