@@ -134,6 +134,70 @@ pub fn completions(app: &App, buf: &mut Buffer, body: Rect) {
     }
 }
 
+/// Completions for the command line, stacked upwards from the prompt.
+pub fn command_candidates(app: &App, buf: &mut Buffer, body: Rect) {
+    let Some(prompt) = &app.prompt else { return };
+    let candidates = &prompt.candidates;
+    let rows = (candidates.items.len() as u16).min(10).min(body.height);
+    if rows == 0 {
+        return;
+    }
+    let items = &candidates.items;
+    let name_width = items.iter().map(|i| width(&i.text)).max().unwrap_or(0) as u16;
+    let about_width = items.iter().map(|i| width(&i.about)).max().unwrap_or(0) as u16;
+    let w = (name_width + about_width + 5).min(body.width).max(12);
+    let x = (body.x + width(prompt.label()) as u16 + candidates.start as u16)
+        .min(body.x + body.width.saturating_sub(w));
+    // Keep the selected entry in view.
+    let top = candidates
+        .selected
+        .map_or(0, |s| s.saturating_sub(rows as usize - 1));
+    let first_row = body.y + body.height - rows;
+    for line in 0..rows {
+        let index = top + line as usize;
+        let Some(item) = items.get(index) else { break };
+        let style = if candidates.selected == Some(index) {
+            app.theme.popup_selected
+        } else {
+            app.theme.popup
+        };
+        let y = first_row + line;
+        fill(
+            buf,
+            Rect {
+                x,
+                y,
+                width: w,
+                height: 1,
+            },
+            style,
+        );
+        put(
+            buf,
+            x + 1,
+            y,
+            name_width.min(w.saturating_sub(2)),
+            &item.text,
+            style,
+        );
+        let room = w.saturating_sub(name_width + 4);
+        if !item.about.is_empty() && room > 0 {
+            put(
+                buf,
+                x + name_width + 3,
+                y,
+                room,
+                &truncate(&item.about, room as usize),
+                style.patch(app.theme.dim).bg(style.bg.unwrap_or_default()),
+            );
+        }
+    }
+    if items.len() > rows as usize {
+        let more = format!(" +{} ", items.len() - rows as usize);
+        put_right(buf, x, first_row, w, &more, app.theme.popup);
+    }
+}
+
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// Draw the status bar (or the prompt, when one is open). Returns the cursor

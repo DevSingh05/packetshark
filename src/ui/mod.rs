@@ -76,6 +76,7 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
                 },
             ),
         }
+        bars::command_candidates(app, buf, body);
         if let Some(c) = bars::status(app, buf, status_row) {
             cursor = Some(c);
         }

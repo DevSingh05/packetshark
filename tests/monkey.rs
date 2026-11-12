@@ -84,6 +84,18 @@ const PHRASES: &[&str] = &[
     ":theme nord\n",
     ":theme default\n",
     ":marked\n",
+    ":marks\n",
+    "ma",
+    "mQ",
+    "'a",
+    "'Q",
+    "''",
+    "12G",
+    "5gg",
+    "ZZ",
+    ":th\t\t\n",
+    ":\t\t\t",
+    ":open /tm\t",
     ":unmark\n",
     ":reload\n",
     ":layout side\n",
@@ -124,6 +136,7 @@ fn random_events(rng: &mut Rng, out: &mut Vec<Event>, size: &mut Option<(u16, u1
             for c in rng.pick(PHRASES).chars() {
                 let code = match c {
                     '\n' => KeyCode::Enter,
+                    '\t' => KeyCode::Tab,
                     c => KeyCode::Char(c),
                 };
                 out.push(key(code, KeyModifiers::NONE));

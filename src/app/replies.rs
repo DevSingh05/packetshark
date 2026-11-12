@@ -202,6 +202,15 @@ impl App {
                     self.refresh_list();
                 }
                 self.count_displayed();
+                if first {
+                    // Marks and the way back belong to the capture that was open.
+                    self.local_marks.clear();
+                    self.jump_back = None;
+                    if let Some(num) = self.after_open_goto.take() {
+                        self.goto_frame(num);
+                        self.jump_back = None;
+                    }
+                }
                 // A truncated tail is expected while a capture is being written.
                 if let Some(w) = warning.filter(|_| !tailing) {
                     self.say(Level::Warn, format!("The capture is incomplete: {w}"));

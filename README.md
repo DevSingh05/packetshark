@@ -28,8 +28,11 @@ rule and preference Wireshark has works here, with the same results.
   text, hex dump or raw bytes; save the payload or filter down to the stream.
 - **Statistics**: conversations, endpoints, protocol hierarchy, expert
   information, per-protocol trees, and exporting objects (HTTP, SMB, TFTP, ...).
-- **Find** by filter expression or plain text; **go to** a packet; **marks**
-  and **time references**.
+- **Find** by filter expression or plain text; **go to** a packet; vim-style
+  **marks** (`ma`, `'a`, `''`), including ones that remember their capture
+  file; **time references**.
+- **A command line that completes** commands, their arguments and file
+  names with Tab.
 - **Apply or prepare a filter** from any field, and **copy** values, filters
   or bytes to the clipboard (using OSC 52, so it works over SSH).
 - **Live capture** through `dumpcap`, a capture **piped in on stdin**, or a
@@ -141,44 +144,51 @@ and a hint:
 
 **Everywhere**
 
-| Key               | Action                                          |
-| ----------------- | ----------------------------------------------- |
-| `?`               | Show or hide this help                          |
-| `q`               | Quit (or close the current window)              |
-| `Tab / Shift-Tab` | Next / previous pane                            |
-| `1 2 3`           | Go to packet list / details / bytes             |
-| `/`               | Edit the display filter                         |
-| `x`               | Clear the display filter                        |
-| `:`               | Command line (try :help)                        |
-| `s`               | Find a packet (filter expression or plain text) |
-| `n / N`           | Next / previous match                           |
-| `z`               | Zoom the current pane                           |
-| `L`               | Switch layout (stacked / side by side)          |
-| `+ / -`           | Grow / shrink the current pane                  |
-| `Ctrl-r`          | Reload the capture                              |
-| `Ctrl-c`          | Stop a live capture, or quit                    |
+| Key                  | Action                                          |
+| -------------------- | ----------------------------------------------- |
+| `?`                  | Show or hide this help                          |
+| `q`                  | Quit (or close the current window)              |
+| `Tab / Shift-Tab`    | Next / previous pane                            |
+| `1 2 3`              | Go to packet list / details / bytes             |
+| `/`                  | Edit the display filter                         |
+| `x`                  | Clear the display filter                        |
+| `:`                  | Command line (try :help)                        |
+| `s`                  | Find a packet (filter expression or plain text) |
+| `n / N`              | Next / previous match                           |
+| `z`                  | Zoom the current pane                           |
+| `L`                  | Switch layout (stacked / side by side)          |
+| `+ / -`              | Grow / shrink the current pane                  |
+| `Ctrl-w w, Ctrl-w =` | Next pane; reset the pane sizes                 |
+| `ZZ`                 | Quit                                            |
+| `Ctrl-r`             | Reload the capture                              |
+| `Ctrl-c`             | Stop a live capture, or quit                    |
 
 **Moving**
 
-| Key                            | Action                           |
-| ------------------------------ | -------------------------------- |
-| `j / k, ↓ / ↑`                 | Down / up                        |
-| `PgDn / PgUp, Ctrl-d / Ctrl-u` | Page down / up                   |
-| `g / G, Home / End`            | First / last                     |
-| `Mouse`                        | Click to select, wheel to scroll |
+| Key                            | Action                                         |
+| ------------------------------ | ---------------------------------------------- |
+| `j / k, ↓ / ↑`                 | Down / up                                      |
+| `PgDn / PgUp, Ctrl-d / Ctrl-u` | Page down / up                                 |
+| `g / G, Home / End`            | First / last                                   |
+| `25G, 25gg`                    | Go to row 25 of the pane                       |
+| `ma … mz`                      | Set a mark on the packet                       |
+| `mA … mZ`                      | Set a mark that remembers the file and is kept |
+| `'a`                           | Go to a mark, opening its file if need be      |
+| `''`                           | Go back to where you were before the last jump |
+| `Mouse`                        | Click to select, wheel to scroll               |
 
 **Packet list**
 
-| Key      | Action                                        |
-| -------- | --------------------------------------------- |
-| `Enter`  | Go to the details pane                        |
-| `m`      | Mark or unmark the packet                     |
-| `Ctrl-t` | Set or clear a time reference                 |
-| `t`      | Change the time format                        |
-| `c`      | Change row colouring (Wireshark / tint / off) |
-| `F`      | Follow the packet's stream                    |
-| `S`      | Statistics menu                               |
-| `:123`   | Go to packet 123                              |
+| Key      | Action                                         |
+| -------- | ---------------------------------------------- |
+| `Enter`  | Go to the details pane                         |
+| `M`      | Mark or unmark the packet (:marked lists them) |
+| `Ctrl-t` | Set or clear a time reference                  |
+| `t`      | Change the time format                         |
+| `c`      | Change row colouring (Wireshark / tint / off)  |
+| `F`      | Follow the packet's stream                     |
+| `S`      | Statistics menu                                |
+| `:123`   | Go to packet 123                               |
 
 **Packet details**
 
@@ -263,6 +273,7 @@ and a hint:
 | `:column remove <name>`   | Remove a column by its title or field                         |
 | `:column reset`           | Go back to the Wireshark profile's columns                    |
 | `:marked`                 | Show only marked packets                                      |
+| `:marks`                  | List the marks set with m, and go to one                      |
 | `:unmark`                 | Remove all marks                                              |
 | `:keylog <file>`          | Decrypt TLS with a key log file                               |
 | `:set <pref> <value>`     | Set a Wireshark preference                                    |

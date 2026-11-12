@@ -51,6 +51,12 @@ impl App {
             "follow" => self.follow_selected(some(arg).as_deref()),
             "w" | "write" | "export" | "save" => self.export(arg),
             "marked" => self.show_marked(),
+            "marks" => self.marks_menu(),
+            // What an entry of the marks list does.
+            "jump" => match arg.chars().next() {
+                Some(letter) if letter.is_ascii_alphabetic() => self.jump_to_mark(letter),
+                _ => self.error("Usage: :jump <mark letter>"),
+            },
             "column" | "columns" | "col" => {
                 let (verb, rest) = match arg.split_once(char::is_whitespace) {
                     Some((v, r)) => (v, r.trim()),
@@ -160,7 +166,7 @@ impl App {
 
     fn show_marked(&mut self) {
         if self.marks.is_empty() {
-            return self.info("No packets are marked. Press m on a packet to mark it.");
+            return self.info("No packets are marked. Press M on a packet to mark it.");
         }
         let terms: Vec<String> = self
             .marks

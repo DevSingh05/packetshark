@@ -383,7 +383,7 @@ fn marks_can_be_listed_and_cleared() {
     };
     h.keys(":marked\n");
     assert!(h.message().contains("No packets are marked"));
-    h.keys("mjm"); // marks 1 and 3 (marking moves down one)
+    h.keys("MjM"); // marks 1 and 3 (marking moves down one)
     assert_eq!(h.app.marks.iter().copied().collect::<Vec<_>>(), [1, 3]);
     assert!(h.line(FIRST_ROW).starts_with('●'));
     h.app.message = None;
@@ -1625,7 +1625,7 @@ fn a_failed_open_keeps_the_current_capture() {
         return;
     };
     h.keys(":8\n");
-    h.keys("m");
+    h.keys("M");
     let notes = h.dir.path().join("notes.bin");
     std::fs::write(&notes, b"this is not a capture file at all\n").unwrap();
     h.keys(&format!(":open {}\n", notes.display()));
@@ -2122,4 +2122,242 @@ fn a_theme_can_be_chosen_and_is_remembered() {
         return;
     };
     assert_eq!(h.app.theme_name(), "default");
+}
+
+#[test]
+fn the_command_line_completes_commands_arguments_and_paths() {
+    let Some(mut h) = Harness::open(&pcap::web()) else {
+        return;
+    };
+    let typed = |h: &Harness| {
+        h.app
+            .prompt
+            .as_ref()
+            .map(|p| p.input.text())
+            .unwrap_or_default()
+    };
+
+    // Nothing is offered until asked; Tab on an empty line lists everything.
+    h.keys(":");
+    h.assert_screen_lacks("Arrange the columns");
+    h.key(KeyCode::Tab);
+    h.assert_screen_contains("Clear the display filter");
+    h.assert_screen_contains("Packet row colours");
+    assert_eq!(typed(&h), "clear", "the first candidate is taken");
+    h.key(KeyCode::Tab);
+    assert_eq!(typed(&h), "colors", "and Tab steps on to the next");
+    h.key(KeyCode::BackTab);
+    assert_eq!(typed(&h), "clear");
+    h.key(KeyCode::Esc);
+
+    // Typing narrows the list; a single match is completed with its space.
+    h.keys(":th");
+    h.assert_screen_contains("Choose a colour theme");
+    h.assert_screen_lacks("Clear the display filter");
+    h.key(KeyCode::Tab);
+    assert_eq!(typed(&h), "theme ");
+    // ... and then its arguments are offered.
+    h.assert_screen_contains("solarized-light");
+    h.keys("no");
+    h.key(KeyCode::Tab);
+    assert_eq!(typed(&h), "theme nord ");
+    h.key(KeyCode::Enter);
+    assert_eq!(h.app.theme_name(), "nord");
+
+    // Arguments that depend on what is open.
+    h.keys(":column remove Pro");
+    h.key(KeyCode::Tab);
+    assert_eq!(typed(&h), "column remove Protocol ");
+    h.key(KeyCode::Esc);
+    h.keys(":layout s");
+    h.assert_screen_contains("stacked");
+    h.assert_screen_contains("side");
+    h.key(KeyCode::Esc);
+
+    // File names, and into a directory.
+    let dir = h.dir.path().to_path_buf();
+    std::fs::create_dir(dir.join("captures")).unwrap();
+    std::fs::write(dir.join("captures").join("other.pcap"), pcap::web().bytes()).unwrap();
+    h.keys(&format!(":open {}/cap", dir.display()));
+    h.key(KeyCode::Tab);
+    assert_eq!(typed(&h), format!("open {}/captures/", dir.display()));
+    h.key(KeyCode::Tab);
+    assert_eq!(
+        typed(&h),
+        format!("open {}/captures/other.pcap ", dir.display())
+    );
+    h.key(KeyCode::Enter);
+    assert_eq!(h.app.title, "other.pcap");
+}
+
+#[test]
+fn every_listed_command_is_one_the_program_knows() {
+    use packetshark::app::cmdline::COMMANDS;
+    let Some(mut h) = Harness::open(&pcap::web()) else {
+        return;
+    };
+    for command in COMMANDS {
+        h.keys(&format!(":{}\n", command.name));
+        assert!(
+            !h.message().contains("Unknown command"),
+            ":{} is listed but not handled",
+            command.name
+        );
+        // Leave whatever it opened, and undo a quit.
+        h.key(KeyCode::Esc);
+        h.key(KeyCode::Esc);
+        h.app.quit = false;
+    }
+    // And the other way round: the help mentions no command that is not listed.
+    for section in packetshark::app::help::SECTIONS {
+        for (keys, _) in section.keys {
+            let Some(rest) = keys.strip_prefix(':') else {
+                continue;
+            };
+            let name = rest.split_whitespace().next().unwrap_or("");
+            if name.is_empty() || name.starts_with('<') || name.chars().all(|c| c.is_ascii_digit())
+            {
+                continue;
+            }
+            assert!(
+                COMMANDS.iter().any(|c| c.name == name),
+                "the help lists :{name}, which completion does not know"
+            );
+        }
+    }
+}
+
+#[test]
+fn marks_counts_and_the_way_back() {
+    use packetshark::config::Store;
+    let scratch = tempfile::tempdir().unwrap();
+    let store = Store::at(scratch.path().join("state.toml"));
+    let options = Options {
+        store: store.clone(),
+        ..Default::default()
+    };
+    // The capture lives in a directory that outlasts this run of the app,
+    // for the mark that is used from a later one.
+    let capture = scratch.path().join("first.pcap");
+    pcap::web().write(&capture);
+    let Some(mut h) = Harness::start(tempfile::tempdir().unwrap(), capture, 100, 30, options)
+    else {
+        return;
+    };
+    h.settle();
+    let at = |h: &Harness| h.app.list.selected_num().unwrap();
+
+    // A count names the row to go to.
+    h.keys("12G");
+    assert_eq!(at(&h), 12);
+    assert_eq!(
+        h.app.focus,
+        Focus::List,
+        "the 1 of 12 did not leave the list"
+    );
+    h.keys("k");
+    assert_eq!(at(&h), 11);
+    h.keys("5gg");
+    assert_eq!(at(&h), 5);
+    h.keys("gg");
+    assert_eq!(at(&h), 1);
+    h.keys("999G");
+    assert_eq!(at(&h), 21, "a count past the end stops at the end");
+    // A digit on its own, or before anything but G, is still a pane key.
+    h.keys("2");
+    assert_eq!(h.app.focus, Focus::Tree);
+    h.keys("1j");
+    assert_eq!(h.app.focus, Focus::List);
+    assert_eq!(at(&h), 21, "j at the last row stays there");
+    // In the details pane a count is a line of the tree. The 2 pressed to
+    // get there is long past by the time the count is typed.
+    h.keys("2");
+    std::thread::sleep(Duration::from_millis(1100));
+    h.keys("3G");
+    assert_eq!(h.app.focus, Focus::Tree);
+    h.keys("1");
+
+    // Marks, and the way back.
+    h.keys(":4\n");
+    h.keys("ma");
+    assert!(
+        h.message().contains("Mark a is packet 4"),
+        "{}",
+        h.message()
+    );
+    h.keys(":15\n");
+    h.keys("mb");
+    h.keys("'a");
+    assert_eq!(at(&h), 4);
+    h.keys("''");
+    assert_eq!(at(&h), 15, "back to where the jump started");
+    h.keys("''");
+    assert_eq!(at(&h), 4, "and '' again swaps the two");
+    h.keys("'q");
+    assert!(h.message().contains("Mark q is not set"), "{}", h.message());
+    // A mark also works under a filter that still shows its packet.
+    h.keys("/tcp\n");
+    h.keys("'b");
+    assert_eq!(at(&h), 15);
+    h.keys("x");
+
+    // The list of marks, and choosing from it.
+    h.keys(":marks\n");
+    h.assert_screen_contains("packet 4");
+    h.assert_screen_contains("packet 15");
+    h.keys("a");
+    assert_eq!(at(&h), 4);
+
+    // An upper-case mark remembers its file.
+    h.keys(":8\n");
+    h.keys("mQ");
+    assert!(
+        h.message().contains("Mark Q is packet 8 of test.pcap"),
+        "{}",
+        h.message()
+    );
+    let first = std::fs::canonicalize(&h.app.source).unwrap();
+    let other = h.dir.path().join("other.pcap");
+    pcap::many(50).write(&other);
+    h.keys(&format!(":open {}\n", other.display()));
+    assert_eq!(h.app.title, "other.pcap");
+    assert!(
+        h.app.local_marks.is_empty(),
+        "lower-case marks stay with their capture"
+    );
+    h.keys("'a");
+    assert!(h.message().contains("Mark a is not set"), "{}", h.message());
+    h.keys("'Q");
+    assert_eq!(h.app.source, first, "the mark's capture was opened again");
+    assert_eq!(at(&h), 8);
+
+    // Ctrl-w and ZZ.
+    h.ctrl('w');
+    h.keys("w");
+    assert_eq!(h.app.focus, Focus::Tree);
+    h.keys("+++");
+    h.ctrl('w');
+    h.keys("=");
+    assert!(h.message().contains("Panes reset"), "{}", h.message());
+    h.keys("Zj");
+    assert!(!h.app.quit, "Z then another key is nothing");
+    h.keys("ZZ");
+    assert!(h.app.quit);
+    drop(h);
+
+    // The upper-case mark is still there in a new run, from another capture.
+    let dir = tempfile::tempdir().unwrap();
+    let elsewhere = dir.path().join("elsewhere.pcap");
+    pcap::many(30).write(&elsewhere);
+    let options = Options {
+        store,
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::start(dir, elsewhere, 100, 30, options) else {
+        return;
+    };
+    h.settle();
+    h.keys("'Q");
+    assert_eq!(h.app.source, first);
+    assert_eq!(at(&h), 8);
 }

@@ -2,6 +2,7 @@
 //! app consumes `Event`s and is drawn by `crate::ui`, so the whole thing can
 //! be driven from tests.
 
+pub mod cmdline;
 pub mod columns;
 pub mod detail;
 pub mod filter;
@@ -132,6 +133,24 @@ pub enum Overlay {
     Columns(ColumnEditor),
 }
 
+/// The share of the screen each pane starts with: list, details, bytes.
+pub const DEFAULT_SPLIT: [u16; 3] = [40, 35, 25];
+
+/// A key that is waiting for the key after it, as in vim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pending {
+    #[default]
+    None,
+    /// `m`: a letter names the mark to set.
+    Mark,
+    /// `'`: a letter names the mark to go to; another `'` goes back.
+    Jump,
+    /// `Z`: a second `Z` quits.
+    Z,
+    /// `Ctrl-w`: a window command.
+    Window,
+}
+
 /// The column editor: a cursor over [`App::column_list`].
 #[derive(Debug, Clone, Copy)]
 pub struct ColumnEditor {
@@ -161,6 +180,8 @@ pub enum PromptKind {
 pub struct Prompt {
     pub kind: PromptKind,
     pub input: TextInput,
+    /// Completions on offer, for the command line.
+    pub candidates: cmdline::Candidates,
 }
 
 impl Prompt {
@@ -284,6 +305,23 @@ pub struct App {
     capture_failure_reported: bool,
     tap_seq: u64,
     pub quit: bool,
+    /// A key waiting for the one after it.
+    pub pending: Pending,
+    /// A count typed before a motion, as in `25G`.
+    count: Option<u32>,
+    /// Where the focus was before the count's first digit, which is also a
+    /// pane key, moved it.
+    count_focus: Option<Focus>,
+    /// When the count's last digit was typed.
+    count_at: Option<Instant>,
+    /// A count and a `g` have just gone to a row; a second `g` is nothing.
+    after_count_g: bool,
+    /// Marks `a` to `z`: packet numbers in this capture.
+    pub local_marks: std::collections::BTreeMap<char, u32>,
+    /// Where the cursor was before the last jump, for `''`.
+    jump_back: Option<u32>,
+    /// A packet to go to once the capture being opened has loaded.
+    after_open_goto: Option<u32>,
     /// Choices remembered between runs.
     pub state: State,
     store: Store,
@@ -357,7 +395,7 @@ impl App {
             focus_before_filter: Focus::List,
             zoom: false,
             layout,
-            split: [40, 35, 25],
+            split: DEFAULT_SPLIT,
             overlay: None,
             prompt: None,
             message: None,
@@ -372,6 +410,14 @@ impl App {
             capture_failure_reported: false,
             tap_seq: 0,
             quit: false,
+            pending: Pending::None,
+            count: None,
+            count_focus: None,
+            count_at: None,
+            after_count_g: false,
+            local_marks: std::collections::BTreeMap::new(),
+            jump_back: None,
+            after_open_goto: None,
             state: options.store.load(),
             store: options.store,
             base_theme,
@@ -749,11 +795,126 @@ impl App {
             ));
             return;
         }
+        self.note_jump();
         self.goto_exact = Some(num);
         self.locate(num, Seek::Nearest, Purpose::Select);
         if self.filter.applied.is_empty() {
             self.goto_exact = None;
         }
+    }
+
+    /// Remember where the cursor is, so that `''` can come back to it.
+    pub(super) fn note_jump(&mut self) {
+        if let Some(num) = self.list.selected_num() {
+            self.jump_back = Some(num);
+        }
+    }
+
+    // ---- marks ------------------------------------------------------------
+
+    /// Set mark `letter` on the selected packet. A lower-case mark belongs
+    /// to this capture; an upper-case one remembers the file as well and is
+    /// kept between runs.
+    pub(super) fn set_mark(&mut self, letter: char) {
+        let Some(num) = self.list.selected_num() else {
+            return self.info("Select a packet first.");
+        };
+        if letter.is_ascii_lowercase() {
+            self.local_marks.insert(letter, num);
+            return self.info(format!("Mark {letter} is packet {num}."));
+        }
+        if self.capture.is_some() || self.tail.is_some() {
+            return self.error(
+                "A mark that remembers its file needs a capture that is not still being written.",
+            );
+        }
+        let summary = self
+            .list
+            .selected_row()
+            .and_then(|row| row.cols.last().cloned())
+            .unwrap_or_default();
+        self.state.marks.insert(
+            letter.to_string(),
+            crate::config::FileMark {
+                // One spelling of the path, so that the mark is recognised
+                // however the capture is opened next time.
+                file: std::fs::canonicalize(&self.source).unwrap_or_else(|_| self.source.clone()),
+                packet: num,
+                summary,
+            },
+        );
+        self.save_state();
+        self.info(format!("Mark {letter} is packet {num} of {}.", self.title));
+    }
+
+    /// Go to mark `letter`, opening its capture if it is in another one.
+    pub(super) fn jump_to_mark(&mut self, letter: char) {
+        if letter.is_ascii_lowercase() {
+            return match self.local_marks.get(&letter).copied() {
+                Some(num) => self.goto_frame(num),
+                None => self.error(format!("Mark {letter} is not set. Set it with m{letter}.")),
+            };
+        }
+        let Some(mark) = self.state.marks.get(&letter.to_string()).cloned() else {
+            return self.error(format!("Mark {letter} is not set. Set it with m{letter}."));
+        };
+        let same = |a: &Path, b: &Path| match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => a == b,
+        };
+        if same(&mark.file, &self.source) {
+            self.goto_frame(mark.packet);
+        } else {
+            self.after_open_goto = Some(mark.packet);
+            self.open(mark.file);
+            if self.pending_open.is_none() {
+                // The file is gone; nothing will load.
+                self.after_open_goto = None;
+            }
+        }
+    }
+
+    /// `''`: go back to where the cursor was before the last jump.
+    pub(super) fn jump_back(&mut self) {
+        match self.jump_back {
+            Some(num) => self.goto_frame(num),
+            None => self.info("There is no earlier position to go back to."),
+        }
+    }
+
+    pub(super) fn marks_menu(&mut self) {
+        let mut items: Vec<MenuItem> = self
+            .local_marks
+            .iter()
+            .map(|(letter, num)| MenuItem {
+                key: *letter,
+                label: format!("packet {num}"),
+                action: Action::Command(format!("jump {letter}")),
+            })
+            .collect();
+        for (letter, mark) in &self.state.marks {
+            let Some(key) = letter.chars().next() else {
+                continue;
+            };
+            let file = mark
+                .file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            items.push(MenuItem {
+                key,
+                label: format!(
+                    "packet {} of {file}  {}",
+                    mark.packet,
+                    crate::util::truncate(&mark.summary, 50)
+                ),
+                action: Action::Command(format!("jump {letter}")),
+            });
+        }
+        if items.is_empty() {
+            return self.info("No marks are set. ma marks a packet; 'a comes back to it.");
+        }
+        self.open_menu("Marks", items);
     }
 
     /// Fetch the list again without changing what it contains.

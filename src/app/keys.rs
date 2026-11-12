@@ -1,9 +1,19 @@
 //! Keyboard and mouse handling.
 
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use super::{App, ColumnEdit, Focus, LayoutKind, Level, Overlay, Prompt, PromptKind};
+use super::{
+    App, ColumnEdit, DEFAULT_SPLIT, Focus, LayoutKind, Level, Overlay, Pending, Prompt, PromptKind,
+};
+
+/// How long typed digits wait for the G that makes them a count.
+const COUNT_LIFETIME: Duration = Duration::from_millis(1000);
+
+/// The furthest a count walks down the details or bytes, which are short.
+const MAX_ROWS_BY_COUNT: u32 = 100_000;
 use crate::sharkd::{Request, Seek};
 use crate::text_input::{Edit, TextInput};
 
@@ -107,7 +117,66 @@ impl App {
             input.set_history(self.command_history.clone());
         }
         input.set(initial);
-        self.prompt = Some(Prompt { kind, input });
+        self.prompt = Some(Prompt {
+            kind,
+            input,
+            candidates: super::cmdline::Candidates::default(),
+        });
+    }
+
+    /// Work out what could complete the command line as it now stands.
+    /// Nothing is offered for an empty line: the list of every command is
+    /// one Tab away, and should not appear unasked.
+    fn refresh_candidates(&mut self, even_if_empty: bool) {
+        let Some(prompt) = &self.prompt else { return };
+        if prompt.kind != PromptKind::Command {
+            return;
+        }
+        let before: String = prompt
+            .input
+            .text()
+            .chars()
+            .take(prompt.input.cursor())
+            .collect();
+        let candidates = if before.trim().is_empty() && !even_if_empty {
+            super::cmdline::Candidates::default()
+        } else {
+            self.command_candidates(&before)
+        };
+        if let Some(prompt) = &mut self.prompt {
+            prompt.candidates = candidates;
+        }
+    }
+
+    /// Tab in the command line: take the only candidate, or step through
+    /// several.
+    fn complete_command(&mut self, by: i64) {
+        if self
+            .prompt
+            .as_ref()
+            .is_some_and(|p| p.candidates.items.is_empty())
+        {
+            self.refresh_candidates(true);
+        }
+        let Some(prompt) = &mut self.prompt else {
+            return;
+        };
+        let start = prompt.candidates.start;
+        let only = prompt.candidates.items.len() == 1;
+        let Some(candidate) = prompt.candidates.step(by) else {
+            return;
+        };
+        let mut text = candidate.text.clone();
+        // A finished word gets its space, except a directory, which is
+        // usually gone into next.
+        if only && !text.ends_with('/') {
+            text.push(' ');
+        }
+        prompt.input.replace_word(start, &text);
+        if only {
+            // Settled: offer what can follow it.
+            self.refresh_candidates(false);
+        }
     }
 
     fn key_prompt(&mut self, key: KeyEvent) {
@@ -144,15 +213,21 @@ impl App {
                     PromptKind::RenameColumn => self.edit_columns(ColumnEdit::Rename(text)),
                 }
             }
+            KeyCode::Tab if prompt.kind == PromptKind::Command => self.complete_command(1),
+            KeyCode::BackTab if prompt.kind == PromptKind::Command => self.complete_command(-1),
             KeyCode::Up => {
                 prompt.input.history_prev();
+                self.refresh_candidates(false);
             }
             KeyCode::Down => {
                 prompt.input.history_next();
+                self.refresh_candidates(false);
             }
             KeyCode::Backspace if prompt.input.is_empty() => self.prompt = None,
             _ => {
-                prompt.input.handle_key(key);
+                if prompt.input.handle_key(key) != Edit::Ignored {
+                    self.refresh_candidates(false);
+                }
             }
         }
     }
@@ -257,10 +332,135 @@ impl App {
 
     // ---- main panes -------------------------------------------------------
 
-    fn key_main(&mut self, key: KeyEvent) {
+    /// The second key of a two-key command. Returns whether the key was
+    /// used up; an unrelated key cancels the command and is dropped, as in
+    /// vim.
+    fn key_pending(&mut self, key: KeyEvent) -> bool {
+        let pending = std::mem::take(&mut self.pending);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match (pending, key.code) {
+            (Pending::None, _) => return false,
+            (Pending::Mark, KeyCode::Char(c)) if c.is_ascii_alphabetic() && !ctrl => {
+                self.set_mark(c);
+            }
+            (Pending::Jump, KeyCode::Char('\'' | '`')) => self.jump_back(),
+            (Pending::Jump, KeyCode::Char(c)) if c.is_ascii_alphabetic() && !ctrl => {
+                self.jump_to_mark(c);
+            }
+            (Pending::Z, KeyCode::Char('Z' | 'Q')) => self.quit = true,
+            (Pending::Window, KeyCode::Char('w' | 'j' | 'l') | KeyCode::Down | KeyCode::Right) => {
+                self.cycle_focus(1);
+            }
+            (
+                Pending::Window,
+                KeyCode::Char('W' | 'p' | 'k' | 'h') | KeyCode::Up | KeyCode::Left,
+            ) => {
+                self.cycle_focus(-1);
+            }
+            (Pending::Window, KeyCode::Char('=')) => {
+                self.split = DEFAULT_SPLIT;
+                self.info("Panes reset to their usual sizes.");
+            }
+            _ => {}
+        }
+        self.count = None;
+        self.count_focus = None;
+        true
+    }
+
+    /// Put the focus back where it was before a count's first digit, which
+    /// doubles as a pane key, moved it.
+    fn restore_count_focus(&mut self) {
+        if let Some(focus) = self.count_focus.take() {
+            self.focus = focus;
+        }
+    }
+
+    /// Go to row `row` (counting from one) of the focused pane.
+    fn go_to_row(&mut self, row: u32) {
+        let index = row.saturating_sub(1);
+        match self.focus {
+            Focus::List | Focus::Filter => {
+                self.note_jump();
+                self.list
+                    .select(index.min(self.list.len().saturating_sub(1)));
+            }
+            Focus::Tree | Focus::Hex => {
+                let home = KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
+                let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+                self.key_focused(home);
+                for _ in 0..index.min(MAX_ROWS_BY_COUNT) {
+                    self.key_focused(down);
+                }
+            }
+        }
+    }
+
+    fn key_main(&mut self, key: KeyEvent) {
+        if self.key_pending(key) {
+            return;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // A count: `25G` goes to row 25. The digits 1 to 3 are also the pane
+        // keys, so the first one still switches pane; a G that follows
+        // undoes that.
+        if !ctrl
+            && let KeyCode::Char(c @ '0'..='9') = key.code
+            && (c != '0' || self.count.is_some())
+        {
+            let digit = c as u32 - '0' as u32;
+            // A digit pressed a while ago was a pane key and nothing more;
+            // only digits typed in one go with the G are a count.
+            if self
+                .count_at
+                .is_some_and(|at| at.elapsed() > COUNT_LIFETIME)
+            {
+                self.count = None;
+            }
+            self.count_at = Some(Instant::now());
+            if self.count.is_none() {
+                self.count_focus = Some(self.focus);
+            }
+            // Every 1, 2 or 3 acts as the pane key it is, so that `2` then
+            // `1` ends in the list; a G after them puts the focus back.
+            match c {
+                '1' => self.focus = Focus::List,
+                '2' => self.focus = Focus::Tree,
+                '3' => self.focus = Focus::Hex,
+                _ => {}
+            }
+            self.count = Some(
+                self.count
+                    .unwrap_or(0)
+                    .saturating_mul(10)
+                    .saturating_add(digit),
+            );
+            return;
+        }
+        let fresh = self
+            .count_at
+            .take()
+            .is_some_and(|at| at.elapsed() <= COUNT_LIFETIME);
+        if let Some(count) = self.count.take().filter(|_| fresh) {
+            // `25G`, `25g` and so `25gg`: row 25. Before any other key the
+            // digits were pane keys, which is how they have already acted.
+            if matches!(motion(key), Some(Motion::End | Motion::Home)) {
+                self.restore_count_focus();
+                self.after_count_g = key.code == KeyCode::Char('g');
+                return self.go_to_row(count);
+            }
+        }
+        self.count_focus = None;
+        // The second g of `25gg`, which has nothing left to do.
+        if std::mem::take(&mut self.after_count_g) && key.code == KeyCode::Char('g') && !ctrl {
+            return;
+        }
         if ctrl {
             match key.code {
+                KeyCode::Char('w') => {
+                    self.pending = Pending::Window;
+                    return;
+                }
                 KeyCode::Char('r') => {
                     self.info("Reloading.");
                     self.reload();
@@ -284,9 +484,9 @@ impl App {
                 }
                 KeyCode::Tab => return self.cycle_focus(1),
                 KeyCode::BackTab => return self.cycle_focus(-1),
-                KeyCode::Char('1') => return self.focus = Focus::List,
-                KeyCode::Char('2') => return self.focus = Focus::Tree,
-                KeyCode::Char('3') => return self.focus = Focus::Hex,
+                KeyCode::Char('m') => return self.pending = Pending::Mark,
+                KeyCode::Char('\'' | '`') => return self.pending = Pending::Jump,
+                KeyCode::Char('Z') => return self.pending = Pending::Z,
                 KeyCode::Char('/') => return self.focus_filter(),
                 KeyCode::Char('x') => {
                     if self.filter.applied.is_empty() && self.filter.input.is_empty() {
@@ -328,10 +528,18 @@ impl App {
                 KeyCode::Char('a') => return self.filter_menu(false),
                 KeyCode::Char('p') => return self.filter_menu(true),
                 KeyCode::Char('y') => return self.copy_menu(),
-                KeyCode::Char('m') => return self.toggle_mark(),
+                KeyCode::Char('M') => return self.toggle_mark(),
                 _ => {}
             }
         }
+        if matches!(motion(key), Some(Motion::End | Motion::Home)) && self.focus == Focus::List {
+            self.note_jump();
+        }
+        self.key_focused(key);
+    }
+
+    /// Hand a key to the pane that has the focus.
+    fn key_focused(&mut self, key: KeyEvent) {
         match self.focus {
             Focus::List => self.key_list(key),
             Focus::Tree => self.key_tree(key),

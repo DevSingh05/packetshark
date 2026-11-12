@@ -13,8 +13,17 @@ Notable changes to packetshark. The format follows
 - A column editor (`:columns`) to reorder, hide, rename, add and delete
   columns, including the Wireshark profile's own.
 
+- Tab completion on the command line, for commands, their arguments and
+  file names.
+- Marks as in vim: `ma` sets one, `'a` goes to it, `''` goes back. An
+  upper-case mark remembers its capture file and is kept between runs.
+  `:marks` lists them.
+- `25G` and `25gg` go to a row; `Ctrl-w w` and `Ctrl-w =` switch pane and
+  reset the pane sizes; `ZZ` quits.
+
 ### Changed
 
+- **Marking a packet for `:marked` is now `M`**, since `m` begins a mark.
 - The columns you arrange are remembered between runs. `:column reset` goes
   back to the Wireshark profile's.
 

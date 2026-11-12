@@ -132,7 +132,7 @@ fn real_captures_can_be_explored_without_errors() {
                 if let Some(problem) = outcome {
                     fail(&mut h, &format!("follow {protocol} {problem}"));
                 }
-                h.keys("mjGmdd");
+                h.keys("MjGMdd");
                 h.key(KeyCode::Esc);
                 followed += 1;
             }
