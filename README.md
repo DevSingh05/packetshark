@@ -252,7 +252,8 @@ and a hint:
 | `:keylog <file>`          | Decrypt TLS with a key log file                               |
 | `:set <pref> <value>`     | Set a Wireshark preference                                    |
 | `:time <format>`          | relative, delta, absolute, date, utc, utc-date, default       |
-| `:colors <mode>`          | wireshark, tint, off                                          |
+| `:theme [name]`           | Choose a colour theme (a list, without a name)                |
+| `:colors <mode>`          | Packet row colours: wireshark, tint, off                      |
 | `:layout <name>`          | stacked, side                                                 |
 | `:open <file>`            | Open another capture                                          |
 | `:reload`                 | Reload the capture                                            |
@@ -279,13 +280,49 @@ background = "auto"        # dark | light | auto (used by "tint")
 mouse = true
 expand_all = false         # start with the details tree fully open
 ascii = false              # draw with ASCII only (automatic without UTF-8)
+theme = "nord"             # colour theme, until you choose one with :theme
 ```
 
-Recent filters are remembered in `~/.local/state/packetshark/filters`.
+Recent filters are remembered in `~/.local/state/packetshark/filters`, and
+choices made while running (the theme, for one) in `state.toml` beside it.
+The config file is yours: packetshark reads it and never writes to it.
 
 Row colours: `wireshark` paints rows with your colouring rules as the GUI
 does. If that clashes with your terminal theme, `tint` colours only the text
 and `off` uses none. `c` cycles through them.
+
+### Themes
+
+`:theme` lists the themes and `:theme nord` switches to one; the choice is
+remembered. `default` follows your terminal's own colours. The others set
+every colour themselves: `dracula`, `gruvbox`, `nord`, `solarized-dark` and
+`solarized-light`.
+
+To make your own, put a file in `~/.config/packetshark/themes/`. Its name is
+the theme's name, and it only needs to mention what it changes:
+
+```toml
+# ~/.config/packetshark/themes/mine.toml
+dark = true                 # which default fills in what is left out
+
+[colors]                    # names of your own, to use below
+ink = "#102030"
+
+[styles]
+text = { fg = "#d0d0d0", bg = "ink" }      # everything not styled otherwise
+selected = { fg = "white", bg = "#005f87", bold = true }
+error = { fg = "208" }                     # a number from the 256 palette
+```
+
+A colour is `#rrggbb`, a terminal colour name (`red`, `lightblue`, `gray`,
+...), a number from 0 to 255, or a name from `[colors]`. A style can also set
+`bold`, `dim`, `italic`, `underline` and `reverse`. The parts that can be
+styled are `text`, `dim`, `title`, `title_focused`, `rule`, `rule_focused`,
+`column_header`, `selected`, `selected_unfocused`, `status`, `status_key`,
+`popup`, `popup_selected`, `ok`, `warn`, `error`, `proto`, `generated`,
+`link`, `hex_offset`, `hex_highlight`, `hex_cursor`, `marked`, `client`,
+`server` and `bar`. A file with the name of a built-in theme replaces it.
+Packet rows keep Wireshark's colouring-rule colours under every theme.
 
 Terminals: the interface uses your terminal's own colours for its accents, so
 it follows your theme. Set `background = "light"` if a light terminal is not

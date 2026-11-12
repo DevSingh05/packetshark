@@ -79,11 +79,34 @@ pub fn draw(app: &mut App, frame: &mut Frame) {
             cursor = Some(c);
         }
     }
+    paint_base(frame.buffer_mut(), app.theme.text);
     if app.theme.ascii {
         asciify(frame.buffer_mut());
     }
     if let Some((x, y)) = cursor {
         frame.set_cursor_position((x, y));
+    }
+}
+
+/// Give every cell that was left in the terminal's own colours the theme's
+/// text colours instead, so that a theme with a background covers the whole
+/// screen however each part was drawn.
+fn paint_base(buf: &mut Buffer, text: Style) {
+    use ratatui::style::Color;
+    if text.fg.is_none() && text.bg.is_none() {
+        return;
+    }
+    for cell in &mut buf.content {
+        if let Some(bg) = text.bg
+            && cell.bg == Color::Reset
+        {
+            cell.bg = bg;
+        }
+        if let Some(fg) = text.fg
+            && cell.fg == Color::Reset
+        {
+            cell.fg = fg;
+        }
     }
 }
 

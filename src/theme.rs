@@ -281,6 +281,370 @@ impl Theme {
     }
 }
 
+/// A theme as written in a TOML file: named colours, and a style for each
+/// part of the interface that the theme wants to change.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ThemeSpec {
+    /// Which built-in palette fills in the parts the theme leaves out.
+    pub dark: Option<bool>,
+    pub colors: std::collections::BTreeMap<String, String>,
+    pub styles: std::collections::BTreeMap<String, StyleSpec>,
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StyleSpec {
+    pub fg: Option<String>,
+    pub bg: Option<String>,
+    pub bold: bool,
+    pub dim: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub reverse: bool,
+}
+
+/// The parts of the interface a theme can style, in the order they are
+/// documented.
+pub const ELEMENTS: &[&str] = &[
+    "text",
+    "dim",
+    "title",
+    "title_focused",
+    "rule",
+    "rule_focused",
+    "column_header",
+    "selected",
+    "selected_unfocused",
+    "status",
+    "status_key",
+    "popup",
+    "popup_selected",
+    "ok",
+    "warn",
+    "error",
+    "proto",
+    "generated",
+    "link",
+    "hex_offset",
+    "hex_highlight",
+    "hex_cursor",
+    "marked",
+    "client",
+    "server",
+    "bar",
+];
+
+/// Styles shared by the built-in themes; each supplies only its colours.
+const COMMON_STYLES: &str = r##"
+[styles]
+text = { fg = "fg", bg = "bg" }
+dim = { fg = "faint" }
+title = { fg = "faint" }
+title_focused = { fg = "accent", bold = true }
+rule = { fg = "raised" }
+rule_focused = { fg = "accent" }
+column_header = { fg = "faint", bold = true }
+selected = { fg = "select_fg", bg = "select_bg" }
+selected_unfocused = { fg = "fg", bg = "raised" }
+status = { fg = "fg", bg = "surface" }
+status_key = { fg = "accent", bg = "surface" }
+popup = { fg = "fg", bg = "surface" }
+popup_selected = { fg = "select_fg", bg = "select_bg" }
+ok = { fg = "green" }
+warn = { fg = "yellow" }
+error = { fg = "red" }
+proto = { bold = true }
+generated = { fg = "faint", italic = true }
+link = { fg = "blue", underline = true }
+hex_offset = { fg = "faint" }
+hex_highlight = { fg = "mark_fg", bg = "mark_bg" }
+hex_cursor = { fg = "select_fg", bg = "select_bg", bold = true }
+marked = { fg = "magenta", bold = true }
+client = { fg = "red" }
+server = { fg = "blue" }
+bar = { fg = "accent" }
+"##;
+
+/// The themes that come with the program: a name and its colours.
+const BUILTIN: &[(&str, &str)] = &[
+    (
+        "dracula",
+        r##"dark = true
+[colors]
+bg = "#282a36"
+surface = "#343746"
+raised = "#44475a"
+fg = "#f8f8f2"
+faint = "#6272a4"
+accent = "#bd93f9"
+select_bg = "#6272a4"
+select_fg = "#f8f8f2"
+mark_bg = "#f1fa8c"
+mark_fg = "#282a36"
+red = "#ff5555"
+green = "#50fa7b"
+yellow = "#f1fa8c"
+blue = "#8be9fd"
+magenta = "#ff79c6"
+"##,
+    ),
+    (
+        "gruvbox",
+        r##"dark = true
+[colors]
+bg = "#282828"
+surface = "#3c3836"
+raised = "#504945"
+fg = "#ebdbb2"
+faint = "#928374"
+accent = "#fabd2f"
+select_bg = "#458588"
+select_fg = "#fbf1c7"
+mark_bg = "#d79921"
+mark_fg = "#282828"
+red = "#fb4934"
+green = "#b8bb26"
+yellow = "#fabd2f"
+blue = "#83a598"
+magenta = "#d3869b"
+"##,
+    ),
+    (
+        "nord",
+        r##"dark = true
+[colors]
+bg = "#2e3440"
+surface = "#3b4252"
+raised = "#4c566a"
+fg = "#d8dee9"
+faint = "#7b88a1"
+accent = "#88c0d0"
+select_bg = "#5e81ac"
+select_fg = "#eceff4"
+mark_bg = "#ebcb8b"
+mark_fg = "#2e3440"
+red = "#bf616a"
+green = "#a3be8c"
+yellow = "#ebcb8b"
+blue = "#81a1c1"
+magenta = "#b48ead"
+"##,
+    ),
+    (
+        "solarized-dark",
+        r##"dark = true
+[colors]
+bg = "#002b36"
+surface = "#073642"
+raised = "#184a56"
+fg = "#93a1a1"
+faint = "#586e75"
+accent = "#268bd2"
+select_bg = "#268bd2"
+select_fg = "#fdf6e3"
+mark_bg = "#b58900"
+mark_fg = "#002b36"
+red = "#dc322f"
+green = "#859900"
+yellow = "#b58900"
+blue = "#2aa198"
+magenta = "#d33682"
+"##,
+    ),
+    (
+        "solarized-light",
+        r##"dark = false
+[colors]
+bg = "#fdf6e3"
+surface = "#eee8d5"
+raised = "#d9d2bf"
+fg = "#586e75"
+faint = "#93a1a1"
+accent = "#268bd2"
+select_bg = "#268bd2"
+select_fg = "#fdf6e3"
+mark_bg = "#b58900"
+mark_fg = "#fdf6e3"
+red = "#dc322f"
+green = "#859900"
+yellow = "#b58900"
+blue = "#2aa198"
+magenta = "#d33682"
+"##,
+    ),
+];
+
+/// Names a theme can be chosen by: `default`, the built-in ones, then any
+/// `NAME.toml` in the user's themes directory.
+pub fn theme_names(user_dir: Option<&std::path::Path>) -> Vec<String> {
+    let mut names = vec!["default".to_string()];
+    names.extend(BUILTIN.iter().map(|(name, _)| (*name).to_string()));
+    if let Some(dir) = user_dir
+        && let Ok(entries) = std::fs::read_dir(dir)
+    {
+        let mut user: Vec<String> = entries
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+            .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .filter(|n| !names.contains(n))
+            .collect();
+        user.sort();
+        names.extend(user);
+    }
+    names
+}
+
+/// Find a theme by name: the user's own file first, so that a built-in one
+/// can be adjusted by copying it, then the built-in ones.
+pub fn find_theme(name: &str, user_dir: Option<&std::path::Path>) -> Result<ThemeSpec, String> {
+    let safe = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+    if !safe {
+        return Err(format!("`{name}` is not a theme name"));
+    }
+    if let Some(dir) = user_dir {
+        let path = dir.join(format!("{name}.toml"));
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                return toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", path.display())),
+        }
+    }
+    match BUILTIN.iter().find(|(n, _)| *n == name) {
+        Some((_, colors)) => {
+            Ok(toml::from_str(&format!("{colors}{COMMON_STYLES}")).expect("built-in themes parse"))
+        }
+        None => Err(format!("there is no theme called {name}")),
+    }
+}
+
+impl Theme {
+    /// A theme built from `spec`. Parts it does not mention keep the look of
+    /// the default dark or light theme.
+    pub fn themed(spec: &ThemeSpec, truecolor: bool) -> Result<Theme, String> {
+        let mut theme = Theme::new(truecolor, spec.dark.unwrap_or(true));
+        for (name, style) in &spec.styles {
+            let style = theme
+                .style_from(style, &spec.colors)
+                .map_err(|e| format!("{name}: {e}"))?;
+            let slot = match name.as_str() {
+                "text" => &mut theme.text,
+                "dim" => &mut theme.dim,
+                "title" => &mut theme.title,
+                "title_focused" => &mut theme.title_focused,
+                "rule" => &mut theme.rule,
+                "rule_focused" => &mut theme.rule_focused,
+                "column_header" => &mut theme.column_header,
+                "selected" => &mut theme.selected,
+                "selected_unfocused" => &mut theme.selected_unfocused,
+                "status" => &mut theme.status,
+                "status_key" => &mut theme.status_key,
+                "popup" => &mut theme.popup,
+                "popup_selected" => &mut theme.popup_selected,
+                "ok" => &mut theme.ok,
+                "warn" => &mut theme.warn,
+                "error" => &mut theme.error,
+                "proto" => &mut theme.proto,
+                "generated" => &mut theme.generated,
+                "link" => &mut theme.link,
+                "hex_offset" => &mut theme.hex_offset,
+                "hex_highlight" => &mut theme.hex_highlight,
+                "hex_cursor" => &mut theme.hex_cursor,
+                "marked" => &mut theme.marked,
+                "client" => &mut theme.client,
+                "server" => &mut theme.server,
+                "bar" => &mut theme.bar,
+                other => {
+                    return Err(format!(
+                        "`{other}` is not a part of the interface; the parts are {}",
+                        ELEMENTS.join(", ")
+                    ));
+                }
+            };
+            *slot = style;
+        }
+        Ok(theme)
+    }
+
+    fn style_from(
+        &self,
+        spec: &StyleSpec,
+        colors: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Style, String> {
+        let mut style = Style::default();
+        if let Some(fg) = &spec.fg {
+            style = style.fg(self.named_color(fg, colors)?);
+        }
+        if let Some(bg) = &spec.bg {
+            style = style.bg(self.named_color(bg, colors)?);
+        }
+        for (on, modifier) in [
+            (spec.bold, Modifier::BOLD),
+            (spec.dim, Modifier::DIM),
+            (spec.italic, Modifier::ITALIC),
+            (spec.underline, Modifier::UNDERLINED),
+            (spec.reverse, Modifier::REVERSED),
+        ] {
+            if on {
+                style = style.add_modifier(modifier);
+            }
+        }
+        Ok(style)
+    }
+
+    /// A colour as a theme writes it: one of the theme's own names, `#rrggbb`,
+    /// a terminal colour name, or a number from the 256-colour palette.
+    fn named_color(
+        &self,
+        text: &str,
+        colors: &std::collections::BTreeMap<String, String>,
+    ) -> Result<Color, String> {
+        // One level of naming is enough, and cannot loop.
+        let text = colors.get(text).map_or(text, String::as_str).trim();
+        if let Some(hex) = text.strip_prefix('#') {
+            return parse_rgb(hex)
+                .filter(|_| hex.len() == 6)
+                .map(|rgb| self.color(rgb))
+                .ok_or_else(|| format!("`{text}` is not a colour like #1a2b3c"));
+        }
+        if let Ok(index) = text.parse::<u8>() {
+            return Ok(Color::Indexed(index));
+        }
+        Ok(
+            match text
+                .to_ascii_lowercase()
+                .replace(['-', '_', ' '], "")
+                .as_str()
+            {
+                "default" | "reset" | "none" => Color::Reset,
+                "black" => Color::Black,
+                "red" => Color::Red,
+                "green" => Color::Green,
+                "yellow" => Color::Yellow,
+                "blue" => Color::Blue,
+                "magenta" => Color::Magenta,
+                "cyan" => Color::Cyan,
+                "gray" | "grey" => Color::Gray,
+                "darkgray" | "darkgrey" => Color::DarkGray,
+                "lightred" => Color::LightRed,
+                "lightgreen" => Color::LightGreen,
+                "lightyellow" => Color::LightYellow,
+                "lightblue" => Color::LightBlue,
+                "lightmagenta" => Color::LightMagenta,
+                "lightcyan" => Color::LightCyan,
+                "white" => Color::White,
+                _ => return Err(format!("`{text}` is not a colour")),
+            },
+        )
+    }
+}
+
 /// Whether the locale says the terminal takes UTF-8. The first of `LC_ALL`,
 /// `LC_CTYPE` and `LANG` that is set decides, as in libc. With none set
 /// nothing is known, and UTF-8 is by far the likelier answer today.
@@ -315,6 +679,90 @@ pub fn ascii_for(c: char) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_built_in_theme_styles_every_part() {
+        for name in theme_names(None).iter().filter(|n| *n != "default") {
+            let spec = find_theme(name, None).unwrap();
+            for element in ELEMENTS {
+                assert!(
+                    spec.styles.contains_key(*element),
+                    "{name} leaves out {element}"
+                );
+            }
+            let theme = Theme::themed(&spec, true).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(theme.text.bg.is_some(), "{name} sets a background");
+            // Selected text must stand out from ordinary text.
+            assert_ne!(theme.selected.bg, theme.text.bg, "{name}");
+            // Without 24-bit colour it still builds, from the 256 palette.
+            let fallback = Theme::themed(&spec, false).unwrap();
+            assert!(
+                matches!(fallback.text.bg, Some(Color::Indexed(_))),
+                "{name}"
+            );
+        }
+        assert!(theme_names(None).len() >= 6);
+    }
+
+    #[test]
+    fn a_user_theme_overrides_parts_and_reports_mistakes() {
+        let parse = |text: &str| Theme::themed(&toml::from_str(text).unwrap(), true);
+        let theme = parse(
+            r##"
+            dark = false
+            [colors]
+            ink = "#102030"
+            [styles]
+            selected = { fg = "ink", bg = "lightyellow", bold = true }
+            warn = { fg = "208" }
+            "##,
+        )
+        .unwrap();
+        assert_eq!(theme.selected.fg, Some(Color::Rgb(0x10, 0x20, 0x30)));
+        assert_eq!(theme.selected.bg, Some(Color::LightYellow));
+        assert!(theme.selected.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(theme.warn.fg, Some(Color::Indexed(208)));
+        // Left alone: the light default.
+        assert_eq!(theme.error, Theme::new(true, false).error);
+
+        let err = parse("[styles]\nselectd = { fg = \"red\" }").unwrap_err();
+        assert!(err.contains("selectd") && err.contains("selected"), "{err}");
+        let err = parse("[styles]\ntext = { fg = \"#12\" }").unwrap_err();
+        assert!(err.contains("#12"), "{err}");
+        let err = parse("[styles]\ntext = { fg = \"blurple\" }").unwrap_err();
+        assert!(err.contains("blurple"), "{err}");
+        assert!(toml::from_str::<ThemeSpec>("[styles]\ntext = { colour = \"red\" }").is_err());
+    }
+
+    #[test]
+    fn user_themes_are_found_by_name_and_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mine.toml"),
+            "[styles]\nok = { fg = \"blue\" }\n",
+        )
+        .unwrap();
+        // A user's file wins over the built-in of the same name.
+        std::fs::write(
+            dir.path().join("nord.toml"),
+            "[styles]\nok = { fg = \"red\" }\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "not a theme").unwrap();
+        let names = theme_names(Some(dir.path()));
+        assert!(names.contains(&"mine".to_string()) && !names.contains(&"notes".to_string()));
+        assert_eq!(names.iter().filter(|n| *n == "nord").count(), 1);
+        let mine = find_theme("mine", Some(dir.path())).unwrap();
+        assert_eq!(Theme::themed(&mine, true).unwrap().ok.fg, Some(Color::Blue));
+        let nord = find_theme("nord", Some(dir.path())).unwrap();
+        assert_eq!(Theme::themed(&nord, true).unwrap().ok.fg, Some(Color::Red));
+        assert!(
+            find_theme("missing", Some(dir.path()))
+                .unwrap_err()
+                .contains("missing")
+        );
+        assert!(find_theme("../etc/passwd", Some(dir.path())).is_err());
+    }
 
     #[test]
     fn the_locale_decides_whether_unicode_is_drawn() {

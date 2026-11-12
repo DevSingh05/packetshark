@@ -19,7 +19,7 @@ use ratatui::backend::CrosstermBackend;
 
 use packetshark::app::{App, Event, Options};
 use packetshark::capture::{self, Capture};
-use packetshark::config::{Config, History};
+use packetshark::config::{self, Config, History};
 use packetshark::sharkd::{self, Launch};
 use packetshark::theme::{RowColors, Theme};
 use packetshark::{ui, util};
@@ -237,6 +237,8 @@ fn run(cli: Cli) -> Result<(), String> {
         display_filter: cli.display_filter.unwrap_or_default(),
         tail,
         prefs,
+        store: config::Store::standard(),
+        themes_dir: config::themes_dir(),
     };
     let mut app = App::new(
         launch,

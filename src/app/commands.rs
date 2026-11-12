@@ -117,6 +117,14 @@ impl App {
                     "Usage: :time relative | delta | delta-displayed | absolute | date | utc | utc-date | default",
                 ),
             },
+            "theme" | "themes" => {
+                if arg.is_empty() {
+                    self.theme_menu();
+                } else {
+                    self.choose_theme(arg);
+                }
+            }
+            "no-theme" => self.choose_theme("default"),
             "colors" | "colours" => match RowColors::parse(arg) {
                 Some(mode) => self.theme.row_colors = mode,
                 None => self.error("Usage: :colors wireshark | tint | off"),

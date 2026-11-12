@@ -23,7 +23,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent
 use ratatui::layout::Rect;
 
 use crate::capture::Capture;
-use crate::config::{Config, History};
+use crate::config::{Config, History, State, Store};
 use crate::sharkd::types::{Info, Status};
 use crate::sharkd::{Launch, Purpose, Reply, Request, Seek, Worker};
 use crate::text_input::TextInput;
@@ -96,9 +96,17 @@ pub enum LoadState {
 pub enum Action {
     ApplyFilter(String),
     PrepareFilter(String),
-    Copy { what: &'static str, text: String },
-    Follow { protocol: String, filter: String },
+    Copy {
+        what: &'static str,
+        text: String,
+    },
+    Follow {
+        protocol: String,
+        filter: String,
+    },
     Stats(stats::Kind),
+    /// Run a command line, as if typed after `:`.
+    Command(String),
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +202,10 @@ pub struct Options {
     pub tail: bool,
     /// Wireshark preferences to set before loading (`name`, `value`).
     pub prefs: Vec<(String, String)>,
+    /// Where choices made while running are remembered.
+    pub store: Store,
+    /// Where the user's own themes are.
+    pub themes_dir: Option<PathBuf>,
 }
 
 pub struct App {
@@ -253,6 +265,13 @@ pub struct App {
     capture_failure_reported: bool,
     tap_seq: u64,
     pub quit: bool,
+    /// Choices remembered between runs.
+    pub state: State,
+    store: Store,
+    /// The look that follows the terminal's colours, kept to go back to.
+    base_theme: Theme,
+    theme_name: String,
+    themes_dir: Option<PathBuf>,
     /// Where exported objects are saved.
     pub download_dir: PathBuf,
     /// Text waiting to be sent to the terminal's clipboard.
@@ -283,6 +302,7 @@ impl App {
             "side" => LayoutKind::Side,
             _ => LayoutKind::Stacked,
         };
+        let base_theme = theme.clone();
         let mut filter = FilterBar::default();
         filter.input.set_history(history.load());
         let display_filter = options.display_filter.trim().to_string();
@@ -334,11 +354,27 @@ impl App {
             capture_failure_reported: false,
             tap_seq: 0,
             quit: false,
+            state: options.store.load(),
+            store: options.store,
+            base_theme,
+            theme_name: "default".to_string(),
+            themes_dir: options.themes_dir,
             download_dir: PathBuf::from("."),
             clipboard: Vec::new(),
             areas: Areas::default(),
             ticks: 0,
         };
+
+        // The theme last chosen with `:theme`, else the one in the config.
+        if let Some(name) = app
+            .state
+            .theme
+            .clone()
+            .or_else(|| app.config.ui.theme.clone())
+            && let Err(e) = app.set_theme(&name)
+        {
+            app.say(Level::Warn, format!("Theme {name} not used: {e}"));
+        }
 
         app.send(Request::Info);
         for (name, value) in options.prefs {
@@ -1259,7 +1295,69 @@ impl App {
             Action::Copy { what, text } => self.copy(what, text),
             Action::Follow { protocol, filter } => self.open_follow(&protocol, &filter),
             Action::Stats(kind) => self.open_stats(kind, None),
+            Action::Command(line) => self.run_command(&line),
         }
+    }
+
+    // ---- remembered choices and themes -----------------------------------
+
+    /// Write the remembered choices to disk.
+    pub(super) fn save_state(&self) {
+        self.store.save(&self.state);
+    }
+
+    /// Switch to the theme called `name`; `default` goes back to the look
+    /// that follows the terminal's own colours.
+    pub fn set_theme(&mut self, name: &str) -> Result<(), String> {
+        if self.base_theme.monochrome_in_use() {
+            return Err("NO_COLOR is set, so themes are switched off.".into());
+        }
+        let mut theme = if name == "default" {
+            self.base_theme.clone()
+        } else {
+            let spec = crate::theme::find_theme(name, self.themes_dir.as_deref())?;
+            Theme::themed(&spec, self.base_theme.truecolor)?
+        };
+        theme.ascii = self.theme.ascii;
+        theme.row_colors = self.theme.row_colors;
+        self.theme = theme;
+        self.theme_name = name.to_string();
+        Ok(())
+    }
+
+    /// The theme in use, by name.
+    pub fn theme_name(&self) -> &str {
+        &self.theme_name
+    }
+
+    pub(super) fn choose_theme(&mut self, name: &str) {
+        match self.set_theme(name) {
+            Ok(()) => {
+                self.state.theme = (name != "default").then(|| name.to_string());
+                self.save_state();
+                self.info(format!("Theme: {name}."));
+            }
+            Err(e) => self.error(e),
+        }
+    }
+
+    pub(super) fn theme_menu(&mut self) {
+        let names = crate::theme::theme_names(self.themes_dir.as_deref());
+        let keys = "abcdefghijklmnopqrstuvwxyz0123456789";
+        let items = names
+            .iter()
+            .zip(keys.chars())
+            .map(|(name, key)| MenuItem {
+                key,
+                label: if *name == self.theme_name {
+                    format!("{name}  (in use)")
+                } else {
+                    name.clone()
+                },
+                action: Action::Command(format!("theme {name}")),
+            })
+            .collect();
+        self.open_menu("Theme", items);
     }
 
     fn copy(&mut self, what: &str, text: String) {

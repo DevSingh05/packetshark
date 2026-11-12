@@ -6,6 +6,11 @@ Notable changes to packetshark. The format follows
 
 ## Unreleased
 
+### Added
+
+- Colour themes: five built in, your own as small TOML files, chosen with
+  `:theme` and remembered.
+
 ## 0.1.1 - 2026-11-12
 
 ### Changed

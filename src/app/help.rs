@@ -144,7 +144,11 @@ pub const SECTIONS: &[Section] = &[
                 ":time <format>",
                 "relative, delta, absolute, date, utc, utc-date, default",
             ),
-            (":colors <mode>", "wireshark, tint, off"),
+            (
+                ":theme [name]",
+                "Choose a colour theme (a list, without a name)",
+            ),
+            (":colors <mode>", "Packet row colours: wireshark, tint, off"),
             (":layout <name>", "stacked, side"),
             (":open <file>", "Open another capture"),
             (":reload", "Reload the capture"),

@@ -1907,3 +1907,75 @@ fn expert_information_groups_messages_and_leads_to_their_packets() {
     assert_eq!(h.app.filter.applied, "");
     assert_eq!(h.app.list.selected_num(), Some(first));
 }
+
+#[test]
+fn a_theme_can_be_chosen_and_is_remembered() {
+    use packetshark::config::Store;
+    let scratch = tempfile::tempdir().unwrap();
+    let store = Store::at(scratch.path().join("state.toml"));
+    let themes = scratch.path().join("themes");
+    std::fs::create_dir_all(&themes).unwrap();
+    std::fs::write(
+        themes.join("mine.toml"),
+        "[styles]\ntext = { fg = \"#102030\", bg = \"#f0e0d0\" }\n",
+    )
+    .unwrap();
+    let options = || Options {
+        store: store.clone(),
+        themes_dir: Some(themes.clone()),
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::open_with(&pcap::web(), 100, 30, options()) else {
+        return;
+    };
+    assert_eq!(h.app.theme_name(), "default");
+    // An empty corner of the screen is in the terminal's own colours.
+    assert_eq!(h.bg_at(99, 0), Some(Color::Reset));
+
+    // A built-in theme paints the whole screen, corners included.
+    h.keys(":theme dracula\n");
+    assert_eq!(h.app.theme_name(), "dracula");
+    let background = Color::Rgb(0x28, 0x2a, 0x36);
+    assert_eq!(h.bg_at(99, 0), Some(background));
+    assert_eq!(
+        h.bg_at(50, 29),
+        Some(Color::Rgb(0x34, 0x37, 0x46)),
+        "status bar"
+    );
+    // ... and so do windows drawn over it.
+    h.keys(":expert\n");
+    assert_eq!(h.bg_at(99, 10), Some(background));
+    h.key(KeyCode::Esc);
+
+    // The chooser lists built-in and user themes, and marks the one in use.
+    h.keys(":theme\n");
+    h.assert_screen_contains("dracula  (in use)");
+    h.assert_screen_contains("solarized-light");
+    h.assert_screen_contains("mine");
+    h.key(KeyCode::Esc);
+    h.keys(":theme mine\n");
+    assert_eq!(h.bg_at(99, 0), Some(Color::Rgb(0xf0, 0xe0, 0xd0)));
+
+    // A mistake changes nothing and says why.
+    h.keys(":theme nope\n");
+    assert!(
+        h.message().contains("no theme called nope"),
+        "{}",
+        h.message()
+    );
+    assert_eq!(h.app.theme_name(), "mine");
+
+    // The next run starts with the theme that was chosen.
+    drop(h);
+    let Some(mut h) = Harness::open_with(&pcap::web(), 100, 30, options()) else {
+        return;
+    };
+    assert_eq!(h.app.theme_name(), "mine");
+    h.keys(":no-theme\n");
+    assert_eq!(h.bg_at(99, 0), Some(Color::Reset));
+    drop(h);
+    let Some(h) = Harness::open_with(&pcap::web(), 100, 30, options()) else {
+        return;
+    };
+    assert_eq!(h.app.theme_name(), "default");
+}

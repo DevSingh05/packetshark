@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Contents of `~/.config/packetshark/config.toml`. Every key is optional.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -30,6 +30,8 @@ pub struct Ui {
     pub expand_all: bool,
     /// Draw with ASCII characters only.
     pub ascii: bool,
+    /// Colour theme to start with, unless one was chosen with `:theme`.
+    pub theme: Option<String>,
 }
 
 impl Default for Ui {
@@ -41,6 +43,7 @@ impl Default for Ui {
             mouse: true,
             expand_all: false,
             ascii: false,
+            theme: None,
         }
     }
 }
@@ -68,6 +71,13 @@ impl Config {
     pub fn parse(text: &str) -> Result<Config, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
+}
+
+/// Where user-made themes live: `themes/NAME.toml` next to the config file.
+pub fn themes_dir() -> Option<PathBuf> {
+    Config::path()
+        .and_then(|p| p.parent().map(|d| d.join("themes")))
+        .or_else(|| config_dir().map(|d| d.join("themes")))
 }
 
 /// `$XDG_CONFIG_HOME/packetshark`, or `~/.config/packetshark` on every Unix
@@ -139,9 +149,173 @@ impl History {
     }
 }
 
+/// What the program remembers between runs that the user did not write by
+/// hand: choices made with commands, recent files, marks. It lives apart from
+/// `config.toml`, which is the user's and is never rewritten.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct State {
+    /// Theme chosen with `:theme`.
+    pub theme: Option<String>,
+    /// The column set arranged with `:columns`; `None` means the Wireshark
+    /// profile's columns.
+    pub columns: Option<Vec<SavedColumn>>,
+    /// Key mappings made with `:map`.
+    pub maps: Vec<KeyMap>,
+    /// Marks `A` to `Z`, which remember their capture file.
+    pub marks: std::collections::BTreeMap<String, FileMark>,
+    /// Captures opened recently, newest first.
+    pub recent_files: Vec<PathBuf>,
+    pub find: FindPrefs,
+    /// How Follow Stream shows data: `ascii`, `hex` or `raw`.
+    pub follow_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedColumn {
+    pub title: String,
+    /// A Wireshark format code (`%m`, `%s`, ...) or `%Cus:<field>:0`.
+    pub format: String,
+    #[serde(default = "yes")]
+    pub visible: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyMap {
+    pub key: String,
+    pub keys: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileMark {
+    pub file: PathBuf,
+    pub packet: u32,
+    #[serde(default)]
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FindPrefs {
+    /// `list`, `details` or `bytes`.
+    pub target: String,
+    /// `string`, `regex`, `hex` or `filter`.
+    pub kind: String,
+    pub case_sensitive: bool,
+}
+
+impl Default for FindPrefs {
+    fn default() -> Self {
+        FindPrefs {
+            target: "bytes".into(),
+            kind: "string".into(),
+            case_sensitive: false,
+        }
+    }
+}
+
+/// Where [`State`] is kept.
+#[derive(Debug, Clone)]
+pub struct Store {
+    path: Option<PathBuf>,
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Store::disabled()
+    }
+}
+
+impl Store {
+    /// `~/.local/state/packetshark/state.toml`.
+    pub fn standard() -> Store {
+        Store {
+            path: state_dir().map(|d| d.join("state.toml")),
+        }
+    }
+
+    /// Never read or written; used by tests.
+    pub fn disabled() -> Store {
+        Store { path: None }
+    }
+
+    pub fn at(path: PathBuf) -> Store {
+        Store { path: Some(path) }
+    }
+
+    /// A missing or unreadable file gives the defaults: losing remembered
+    /// choices is better than refusing to start.
+    pub fn load(&self) -> State {
+        self.path
+            .as_ref()
+            .and_then(|p| fs::read_to_string(p).ok())
+            .and_then(|text| toml::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// Best effort, written to a temporary file first so that a crash or a
+    /// second instance cannot leave half a file behind.
+    pub fn save(&self, state: &State) {
+        let Some(path) = &self.path else { return };
+        let Ok(text) = toml::to_string(state) else {
+            return;
+        };
+        if let Some(dir) = path.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let tmp = path.with_extension(format!("toml.{}", std::process::id()));
+        if fs::write(&tmp, text).is_ok() && fs::rename(&tmp, path).is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_round_trips_and_survives_a_damaged_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("deep").join("state.toml"));
+        assert_eq!(store.load(), State::default(), "nothing saved yet");
+
+        let mut state = State {
+            theme: Some("dracula".into()),
+            ..State::default()
+        };
+        state.columns = Some(vec![SavedColumn {
+            title: "Stream".into(),
+            format: "%Cus:tcp.stream:0".into(),
+            visible: false,
+        }]);
+        state.maps.push(KeyMap {
+            key: "<f5>".into(),
+            keys: ":conv<enter>".into(),
+        });
+        state.marks.insert(
+            "A".into(),
+            FileMark {
+                file: "/tmp/x.pcap".into(),
+                packet: 7,
+                summary: "GET /".into(),
+            },
+        );
+        state.recent_files.push("/tmp/x.pcap".into());
+        store.save(&state);
+        assert_eq!(store.load(), state);
+
+        // Garbage on disk is ignored rather than fatal.
+        fs::write(dir.path().join("deep").join("state.toml"), "not [toml").unwrap();
+        assert_eq!(store.load(), State::default());
+        // A store that is switched off does nothing at all.
+        Store::disabled().save(&state);
+        assert_eq!(Store::disabled().load(), State::default());
+    }
 
     #[test]
     fn empty_config_uses_defaults() {
