@@ -143,7 +143,7 @@ impl Client {
         loop {
             let mut line = OneLine::new(&mut self.stdout);
             let parsed = {
-                let mut de = serde_json::Deserializer::from_reader(&mut line);
+                let mut de = serde_json::Deserializer::from_reader(Utf8Lossy::new(&mut line));
                 Reply::<T>::deserialize(&mut de)
             };
             // Whatever happened, leave the pipe at the start of the next line.
@@ -312,6 +312,98 @@ impl<R: BufRead> Read for OneLine<'_, R> {
     }
 }
 
+/// A reader that passes UTF-8 through and replaces anything else with
+/// U+FFFD, as it streams.
+///
+/// JSON has to be UTF-8, but sharkd before 4.2 copies some bytes of a
+/// malformed packet into its reply as they are. One such byte made the
+/// whole reply unreadable, so that packet could not be shown at all.
+struct Utf8Lossy<R: Read> {
+    inner: R,
+    /// The start of a character whose remaining bytes have not arrived.
+    carry: Vec<u8>,
+    /// Cleaned bytes not yet handed out.
+    ready: Vec<u8>,
+    ready_at: usize,
+    ended: bool,
+}
+
+const REPLACEMENT: &[u8] = "\u{fffd}".as_bytes();
+
+impl<R: Read> Utf8Lossy<R> {
+    fn new(inner: R) -> Self {
+        Utf8Lossy {
+            inner,
+            carry: Vec::new(),
+            ready: Vec::new(),
+            ready_at: 0,
+            ended: false,
+        }
+    }
+
+    /// Move `data` into `ready`, replacing what is not UTF-8 and keeping
+    /// back a character that is cut off at the end.
+    fn clean(&mut self, mut data: &[u8]) {
+        loop {
+            match std::str::from_utf8(data) {
+                Ok(_) => {
+                    self.ready.extend_from_slice(data);
+                    return;
+                }
+                Err(e) => {
+                    let (valid, rest) = data.split_at(e.valid_up_to());
+                    self.ready.extend_from_slice(valid);
+                    let Some(bad) = e.error_len() else {
+                        // Cut off, not wrong: wait for the rest of it.
+                        self.carry.extend_from_slice(rest);
+                        return;
+                    };
+                    self.ready.extend_from_slice(REPLACEMENT);
+                    data = &rest[bad..];
+                }
+            }
+        }
+    }
+}
+
+impl<R: Read> Read for Utf8Lossy<R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.ready_at < self.ready.len() {
+                let n = out.len().min(self.ready.len() - self.ready_at);
+                out[..n].copy_from_slice(&self.ready[self.ready_at..self.ready_at + n]);
+                self.ready_at += n;
+                return Ok(n);
+            }
+            self.ready.clear();
+            self.ready_at = 0;
+            if self.ended {
+                return Ok(0);
+            }
+            let n = self.inner.read(out)?;
+            if n == 0 {
+                self.ended = true;
+                // A character that never finished.
+                if !self.carry.is_empty() {
+                    self.carry.clear();
+                    self.ready.extend_from_slice(REPLACEMENT);
+                }
+                continue;
+            }
+            // The usual case: all of it is fine and can stay where it is.
+            if self.carry.is_empty() && std::str::from_utf8(&out[..n]).is_ok() {
+                return Ok(n);
+            }
+            let mut data = std::mem::take(&mut self.carry);
+            data.extend_from_slice(&out[..n]);
+            self.clean(&data);
+        }
+    }
+}
+
 /// The Wireshark version of the sharkd at `program`, as (major, minor).
 ///
 /// This asks `sharkd -v` rather than using the `version` in sharkd's `info`
@@ -390,6 +482,52 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hands out its data a few bytes at a time, to split characters.
+    struct Dribble<'a>(&'a [u8], usize);
+
+    impl Read for Dribble<'_> {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            let n = self.1.min(out.len()).min(self.0.len());
+            out[..n].copy_from_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Ok(n)
+        }
+    }
+
+    fn lossy(data: &[u8], step: usize) -> String {
+        let mut out = Vec::new();
+        Utf8Lossy::new(Dribble(data, step))
+            .read_to_end(&mut out)
+            .unwrap();
+        String::from_utf8(out).expect("the output is always UTF-8")
+    }
+
+    #[test]
+    fn bytes_that_are_not_utf8_are_replaced() {
+        for step in 1..8 {
+            assert_eq!(lossy(b"plain ascii", step), "plain ascii");
+            assert_eq!(
+                lossy("caf\u{e9} \u{4e2d}\u{6587} \u{1f988}".as_bytes(), step),
+                "caf\u{e9} \u{4e2d}\u{6587} \u{1f988}"
+            );
+            assert_eq!(lossy(b"filesys: \xaa)", step), "filesys: \u{fffd})");
+            assert_eq!(
+                lossy(b"\xff\xfe ok \xc3", step),
+                "\u{fffd}\u{fffd} ok \u{fffd}"
+            );
+            // A lead byte followed by something that is not a continuation.
+            assert_eq!(lossy(b"a\xe4\xb8z", step), "a\u{fffd}z");
+        }
+    }
+
+    #[test]
+    fn a_reply_holding_a_raw_byte_still_parses() {
+        let line = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"l\":\"Unknown filesys: \xaa\"}}\n";
+        let mut de = serde_json::Deserializer::from_reader(Utf8Lossy::new(&line[..]));
+        let reply = Reply::<Value>::deserialize(&mut de).unwrap();
+        assert_eq!(reply.result.unwrap()["l"], "Unknown filesys: \u{fffd}");
+    }
 
     #[test]
     fn the_version_is_read_from_the_banner() {
