@@ -396,6 +396,8 @@ pub struct HexState {
     pub source: usize,
     /// Byte under the cursor.
     pub cursor: usize,
+    /// Where a selection of bytes started; it runs from here to the cursor.
+    pub anchor: Option<usize>,
     /// First visible row.
     pub top: usize,
     pub height: u16,
@@ -412,6 +414,14 @@ impl HexState {
         self.source = 0;
         self.cursor = 0;
         self.top = 0;
+        self.anchor = None;
+    }
+
+    /// The selected bytes as (first, count), if a selection is being made.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let anchor = self.anchor?;
+        let (first, last) = (anchor.min(self.cursor), anchor.max(self.cursor));
+        Some((first, last - first + 1))
     }
 
     /// Bring a byte range into view.

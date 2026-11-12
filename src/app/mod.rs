@@ -1340,6 +1340,14 @@ impl App {
         Some((node.ds.unwrap_or(0), start as usize, len as usize))
     }
 
+    /// The bytes picked out by hand in the bytes pane, as (source, first,
+    /// count), clipped to the data there is.
+    pub fn byte_selection(&self) -> Option<(usize, usize, usize)> {
+        let (first, count) = self.hex.selection()?;
+        let len = self.hex_bytes().len();
+        (first < len).then(|| (self.hex.source, first, count.min(len - first)))
+    }
+
     /// Scroll the bytes pane to the selected field.
     fn sync_hex_to_tree(&mut self) {
         if let Some((source, start, len)) = self.highlight() {
@@ -1700,6 +1708,40 @@ impl App {
                     },
                 });
             }
+        }
+        // Bytes picked out by hand come first: they are what was asked for.
+        if let Some((_, first, count)) = self.byte_selection() {
+            let bytes = self.hex_bytes()[first..first + count].to_vec();
+            let text: String = bytes.iter().map(|b| crate::util::printable(*b)).collect();
+            let escaped: String = bytes.iter().map(|b| format!("\\x{b:02x}")).collect();
+            let array = bytes
+                .iter()
+                .map(|b| format!("0x{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let base64 = {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD.encode(&bytes)
+            };
+            let what = format!("{count} selected byte{}", if count == 1 { "" } else { "s" });
+            let preview = |s: &str| crate::util::truncate(s, 40);
+            let mut add = |key, label: &str, text: String| {
+                items.push(MenuItem {
+                    key,
+                    label: format!("{label:<14}{}", preview(&text)),
+                    action: Action::Copy {
+                        what: "selected bytes",
+                        text,
+                    },
+                });
+            };
+            add('x', "Hex", crate::util::hex_string(&bytes));
+            add('t', "Text", text);
+            add('e', "Escaped", escaped);
+            add('c', "C array", array);
+            add('6', "Base64", base64);
+            add('u', "Hex dump", crate::util::hexdump(&bytes));
+            return self.open_menu(&format!("Copy {what}"), items);
         }
         if let Some((source, start, len)) = self.highlight()
             && let Some(bytes) = self

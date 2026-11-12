@@ -135,6 +135,9 @@ const PHRASES: &[&str] = &[
     "nnN",
     "stcp\n",
     "\nel*",
+    "3vllljy",
+    "3vjjyx",
+    "3v",
     "?",
 ];
 
@@ -280,7 +283,7 @@ fn random_input_never_breaks_the_app() {
     let events = std::env::var("PACKETSHARK_MONKEY_EVENTS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(600);
+        .unwrap_or(1500);
     let seeds: Vec<u64> = match std::env::var("PACKETSHARK_MONKEY_SEED") {
         Ok(seed) => vec![seed.parse().expect("a number")],
         Err(_) => (1..=4).collect(),

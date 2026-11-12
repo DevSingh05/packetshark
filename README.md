@@ -19,7 +19,8 @@ rule and preference Wireshark has works here, with the same results.
 
 - **Three linked panes.** Select a field and its bytes light up; move the byte
   cursor and the field that owns the byte is selected. Reassembled and
-  decrypted data appear as extra data sources.
+  decrypted data appear as extra data sources. Any run of bytes can be
+  selected and copied as hex, text, a C array or base64.
 - **Display filters with live feedback.** The filter is checked as you type,
   field names complete with Tab, and an invalid filter is never applied.
 - **Large captures.** Only the rows on screen are fetched, so a
@@ -223,11 +224,12 @@ and a hint:
 
 **Packet bytes**
 
-| Key               | Action                                               |
-| ----------------- | ---------------------------------------------------- |
-| `h j k l, arrows` | Move the byte cursor; the matching field is selected |
-| `[ / ]`           | Previous / next data source (reassembled, decrypted) |
-| `y`               | Copy bytes                                           |
+| Key               | Action                                                 |
+| ----------------- | ------------------------------------------------------ |
+| `h j k l, arrows` | Move the byte cursor; the matching field is selected   |
+| `[ / ]`           | Previous / next data source (reassembled, decrypted)   |
+| `v`               | Select bytes from here: move to extend, y to copy them |
+| `y`               | Copy bytes                                             |
 
 **Filter bar**
 

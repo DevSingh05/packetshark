@@ -84,6 +84,10 @@ pub const SECTIONS: &[Section] = &[
                 "[ / ]",
                 "Previous / next data source (reassembled, decrypted)",
             ),
+            (
+                "v",
+                "Select bytes from here: move to extend, y to copy them",
+            ),
             ("y", "Copy bytes"),
         ],
     },

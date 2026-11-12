@@ -3060,3 +3060,81 @@ fn packets_over_time_and_the_flow_sequence() {
     h.keys("f");
     h.assert_screen_contains("What");
 }
+
+#[test]
+fn a_range_of_bytes_can_be_selected_and_copied() {
+    let Some(mut h) = Harness::open(&pcap::web()) else {
+        return;
+    };
+    // Packet 6 is the GET request; its payload starts at byte 54.
+    h.keys(":6\n");
+    h.keys("3");
+    for _ in 0..54 {
+        h.keys("l");
+    }
+    assert!(bytes_at_cursor(&h).starts_with(b"GET /index.html"));
+    assert!(h.app.byte_selection().is_none());
+
+    // v starts a selection; moving extends it, in either direction.
+    h.keys("v");
+    assert!(h.message().contains("Selecting bytes"), "{}", h.message());
+    h.keys("ll");
+    assert_eq!(h.app.byte_selection(), Some((0, 54, 3)));
+    let title = h.find_line("selected").unwrap().1;
+    assert!(
+        title.contains("3 selected, from offset 54 (0x0036)"),
+        "{title}"
+    );
+    // The selected bytes are picked out on screen, the next one is not.
+    // (G and E are the last two bytes before the gap in the middle of the
+    // row; T and the space are the first two after it.)
+    let (y, row) = h.find_line("47 45  54 20").unwrap();
+    let x = row.find("47 45  54 20").unwrap() as u16;
+    let highlight = h.app.theme.hex_highlight.bg;
+    assert_eq!(h.bg_at(x, y), highlight, "first selected byte");
+    assert_eq!(h.bg_at(x + 3, y), highlight, "second");
+    assert_ne!(
+        h.bg_at(x + 10, y),
+        highlight,
+        "the byte after the selection"
+    );
+
+    // y offers the selection in the forms people paste.
+    h.key(KeyCode::Char('y'));
+    h.assert_screen_contains("Copy 3 selected bytes");
+    for form in ["Hex", "Text", "Escaped", "C array", "Base64", "Hex dump"] {
+        h.assert_screen_contains(form);
+    }
+    h.keys("x");
+    assert_eq!(h.app.clipboard.pop().as_deref(), Some("474554"));
+    for (key, wanted) in [
+        ('t', "GET"),
+        ('e', "\\x47\\x45\\x54"),
+        ('c', "0x47, 0x45, 0x54"),
+        ('6', "R0VU"),
+    ] {
+        h.key(KeyCode::Char('y'));
+        h.key(KeyCode::Char(key));
+        assert_eq!(h.app.clipboard.pop().as_deref(), Some(wanted), "{key}");
+    }
+
+    // Backwards from the anchor works too, and v again stops.
+    h.keys("hhhh");
+    assert_eq!(h.app.byte_selection(), Some((0, 52, 3)));
+    h.keys("v");
+    assert!(h.app.byte_selection().is_none());
+    // Esc stops as well, and another packet starts clean.
+    h.keys("v");
+    h.key(KeyCode::Esc);
+    assert!(h.app.byte_selection().is_none());
+    h.keys("vl1j");
+    assert!(
+        h.app.byte_selection().is_none(),
+        "a new packet has no selection"
+    );
+    // Without a selection, y is the field menu as before.
+    h.keys("3");
+    h.key(KeyCode::Char('y'));
+    h.assert_screen_contains("Hex dump");
+    h.assert_screen_lacks("selected byte");
+}

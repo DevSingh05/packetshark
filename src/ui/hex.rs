@@ -71,7 +71,9 @@ pub fn draw(app: &mut App, buf: &mut Buffer, area: Rect) {
         Some(d) if sources == 1 => d.sources[0].name.clone(),
         _ => String::new(),
     };
-    let title = if focused && sources > 0 {
+    let title = if let Some((first, count)) = app.hex.selection() {
+        format!("Bytes · {count} selected, from offset {first} (0x{first:04x})")
+    } else if focused && sources > 0 {
         format!("Bytes · offset {0} (0x{0:04x})", app.hex.cursor)
     } else {
         "Bytes".to_string()
@@ -96,8 +98,10 @@ pub fn draw(app: &mut App, buf: &mut Buffer, area: Rect) {
         .min(rows.saturating_sub(content.height.max(1) as usize));
     app.hex.cursor = app.hex.cursor.min(len - 1);
 
+    // Bytes picked out by hand take the place of the field's own.
     let highlight = app
-        .highlight()
+        .byte_selection()
+        .or_else(|| app.highlight())
         .filter(|(s, _, _)| *s == source)
         .map(|(_, start, n)| (start, start + n));
     let in_highlight = |i: usize| highlight.is_some_and(|(a, b)| i >= a && i < b);

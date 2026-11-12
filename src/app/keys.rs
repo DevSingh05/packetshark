@@ -529,6 +529,8 @@ impl App {
                 KeyCode::Esc => {
                     if self.searching() {
                         self.stop_find();
+                    } else if self.hex.anchor.take().is_some() {
+                        // A selection of bytes was under way.
                     } else if self.zoom {
                         self.zoom = false;
                     }
@@ -686,6 +688,18 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => Some(-per_row),
             KeyCode::Char('0') => Some(-((self.hex.cursor % per_row as usize) as i64)),
             KeyCode::Char('$') => Some(per_row - 1 - (self.hex.cursor % per_row as usize) as i64),
+            // Start picking out bytes from here, or stop.
+            KeyCode::Char('v') => {
+                self.hex.anchor = match self.hex.anchor {
+                    Some(_) => None,
+                    None if len > 0 => {
+                        self.info("Selecting bytes: move to extend, y to copy, v or Esc to stop.");
+                        Some(self.hex.cursor)
+                    }
+                    None => None,
+                };
+                None
+            }
             KeyCode::Char('[') => {
                 self.switch_source(-1);
                 None
@@ -717,6 +731,7 @@ impl App {
             return;
         }
         self.hex.source = (self.hex.source as i64 + step).rem_euclid(n) as usize;
+        self.hex.anchor = None;
         self.hex.cursor = 0;
         self.hex.top = 0;
     }
