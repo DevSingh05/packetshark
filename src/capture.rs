@@ -465,7 +465,9 @@ mod tests {
         assert!(!cap.running());
         // The pipe is still open and still delivering; none of it is kept.
         tx.send(b"second".to_vec()).unwrap();
-        tx.send(b"third".to_vec()).unwrap();
+        // The reader may already have gone by now, having seen "second"
+        // and stopped, in which case there is nobody to send to.
+        let _ = tx.send(b"third".to_vec());
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert_eq!(fs::read(cap.path()).unwrap(), b"first");
         assert!(cap.failure().is_none());
