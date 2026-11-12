@@ -126,10 +126,21 @@ pub struct FrameDetail {
     #[serde(default)]
     pub ds: Vec<DataSource>,
     /// `(protocol, filter)` pairs that can be followed from this frame.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "followable")]
     pub fol: Vec<(String, String)>,
     #[serde(default)]
     pub comment: Option<serde_json::Value>,
+}
+
+/// The streams a frame belongs to. sharkd lists a protocol with a null
+/// filter when the frame only quotes that protocol (a UDP header inside an
+/// ICMP error, say) and so is part of no stream; those are left out.
+fn followable<'de, D: Deserializer<'de>>(de: D) -> Result<Vec<(String, String)>, D::Error> {
+    let pairs = Option::<Vec<(String, Option<String>)>>::deserialize(de)?.unwrap_or_default();
+    Ok(pairs
+        .into_iter()
+        .filter_map(|(protocol, filter)| Some((protocol, filter?)))
+        .collect())
 }
 
 /// Reply to `follow`.
@@ -576,6 +587,19 @@ pub struct Download {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_that_only_quotes_a_protocol_has_nothing_to_follow() {
+        let detail: FrameDetail =
+            serde_json::from_str(r#"{"tree":[],"fol":[["UDP",null],["TCP","tcp.stream==3"]]}"#)
+                .unwrap();
+        assert_eq!(
+            detail.fol,
+            [("TCP".to_string(), "tcp.stream==3".to_string())]
+        );
+        let detail: FrameDetail = serde_json::from_str(r#"{"tree":[],"fol":null}"#).unwrap();
+        assert!(detail.fol.is_empty());
+    }
 
     #[derive(Debug, Deserialize, PartialEq)]
     struct Item(u64);
