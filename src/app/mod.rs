@@ -23,7 +23,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent
 use ratatui::layout::Rect;
 
 use crate::capture::Capture;
-use crate::config::{Config, History, State, Store};
+use crate::config::{Config, History, SavedColumn, State, Store};
 use crate::sharkd::types::{Info, Status};
 use crate::sharkd::{Launch, Purpose, Reply, Request, Seek, Worker};
 use crate::text_input::TextInput;
@@ -129,6 +129,22 @@ pub enum Overlay {
     Menu(Menu),
     Follow(Box<FollowView>),
     Stats(Box<StatsView>),
+    Columns(ColumnEditor),
+}
+
+/// The column editor: a cursor over [`App::column_list`].
+#[derive(Debug, Clone, Copy)]
+pub struct ColumnEditor {
+    pub selected: usize,
+}
+
+/// A change made in the column editor to the column under the cursor.
+#[derive(Debug, Clone)]
+pub enum ColumnEdit {
+    Toggle,
+    Delete,
+    Move(i64),
+    Rename(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +152,9 @@ pub enum PromptKind {
     Command,
     Find,
     SaveStream,
+    /// A field, and optionally a title, for a new column.
+    AddColumn,
+    RenameColumn,
 }
 
 #[derive(Debug)]
@@ -150,6 +169,8 @@ impl Prompt {
             PromptKind::Command => ":",
             PromptKind::Find => "Find: ",
             PromptKind::SaveStream => "Save stream to: ",
+            PromptKind::AddColumn => "Field for the new column, then a title if you like: ",
+            PromptKind::RenameColumn => "New title: ",
         }
     }
 }
@@ -219,8 +240,6 @@ pub struct App {
     held_keys: Vec<KeyEvent>,
     /// Keys typed before the capture had opened; see `holds_for_opening`.
     typed_ahead: std::collections::VecDeque<KeyEvent>,
-    /// Columns added on top of the profile's, as (title, field).
-    pub extra_columns: Vec<(String, String)>,
     history: History,
     command_history: Vec<String>,
 
@@ -316,7 +335,6 @@ impl App {
             inflight: 0,
             held_keys: Vec::new(),
             typed_ahead: std::collections::VecDeque::new(),
-            extra_columns: Vec::new(),
             history,
             command_history: Vec::new(),
             tree: TreeState::with_expand_all(config.ui.expand_all),
@@ -1376,16 +1394,55 @@ impl App {
 
     // ---- columns ----------------------------------------------------------
 
-    /// The profile's columns plus the ones added here.
+    /// Every column there is, shown or hidden: the set arranged in the
+    /// column editor if there is one, else the Wireshark profile's.
+    pub fn column_list(&self) -> Vec<SavedColumn> {
+        match (&self.state.columns, &self.status) {
+            (Some(list), _) => list.clone(),
+            (None, Some(status)) => Columns::profile_list(status),
+            (None, None) => Vec::new(),
+        }
+    }
+
+    /// Whether the columns are the user's own arrangement.
+    pub fn columns_customised(&self) -> bool {
+        self.state.columns.is_some()
+    }
+
     pub(super) fn build_columns(&mut self) {
-        let Some(status) = &self.status else { return };
-        let mut columns = Columns::new(status, self.info.as_ref());
-        if columns.can_customize() {
-            for (title, field) in &self.extra_columns {
-                columns.add_custom(title, field);
+        if self.status.is_none() {
+            return;
+        }
+        let mut columns = Columns::from_list(&self.column_list(), self.info.as_ref());
+        if self.state.columns.is_some() && !columns.can_customize() {
+            // sharkd has not said how it numbers its columns (yet, or ever):
+            // an arrangement cannot be described to it, so show its own.
+            if let Some(status) = &self.status {
+                columns = Columns::new(status, self.info.as_ref());
             }
         }
         self.columns = columns;
+    }
+
+    /// Replace the arrangement, remember it and redraw the list with it.
+    /// `None` goes back to the Wireshark profile's columns.
+    pub(super) fn set_column_list(&mut self, list: Option<Vec<SavedColumn>>) {
+        self.state.columns = list;
+        self.save_state();
+        if self.status.is_some() {
+            self.build_columns();
+            // Widths were measured for the old set of columns.
+            self.list.widths.clear();
+            self.refresh_list();
+        }
+    }
+
+    fn can_arrange_columns(&mut self) -> bool {
+        if self.info.is_some() && !Columns::from_list(&[], self.info.as_ref()).can_customize() {
+            self.error("This version of sharkd cannot show a changed set of columns.");
+            return false;
+        }
+        true
     }
 
     /// Start adding a column for `field`; it appears once sharkd has
@@ -1396,13 +1453,20 @@ impl App {
             self.error("A column shows one field, e.g. :column tcp.stream");
             return;
         }
-        if self.extra_columns.iter().any(|(_, f)| f == field) {
+        if !self.can_arrange_columns() {
+            return;
+        }
+        let format = format!("%Cus:{field}:0");
+        if self.column_list().iter().any(|c| c.format == format) {
             self.info(format!("There is already a column for {field}."));
             return;
         }
-        let title = title.map_or(field, str::trim).to_string();
+        let title = title
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or(field);
         self.send(Request::CheckField {
-            title,
+            title: title.to_string(),
             field: field.to_string(),
         });
     }
@@ -1417,47 +1481,160 @@ impl App {
             self.error(format!("No column added: {reason}"));
             return;
         }
-        if !self.columns.can_customize() && self.status.is_some() {
-            self.error("This version of sharkd cannot show extra columns.");
-            return;
-        }
-        if self.extra_columns.iter().any(|(_, f)| *f == field) {
+        let format = format!("%Cus:{field}:0");
+        if self.column_list().iter().any(|c| c.format == format) {
             return;
         }
         self.info(format!("Added column {title}."));
-        self.extra_columns.push((title, field));
-        self.columns_changed();
+        self.insert_column(SavedColumn {
+            title,
+            format,
+            visible: true,
+        });
     }
 
-    /// Remove an added column by its title or field, or all of them.
-    pub(super) fn remove_column(&mut self, which: &str) {
-        let before = self.extra_columns.len();
-        if which.is_empty() {
-            self.extra_columns.clear();
+    /// Add a column just before Info, which is where a new one is wanted:
+    /// next to the summary it adds to.
+    pub(super) fn insert_column(&mut self, column: SavedColumn) {
+        let mut list = self.column_list();
+        let at = list
+            .iter()
+            .position(|c| c.format == "%i")
+            .unwrap_or(list.len());
+        list.insert(at, column);
+        self.set_column_list(Some(list));
+        if let Some(Overlay::Columns(editor)) = &mut self.overlay {
+            editor.selected = at;
+        }
+    }
+
+    /// Add one of the built-in column types by its format code.
+    pub(super) fn add_built_in_column(&mut self, format: &str, title: &str) {
+        if !self.can_arrange_columns() {
+            return;
+        }
+        let known = columns::BUILT_IN.iter().find(|(_, code)| *code == format);
+        let Some((default_title, _)) = known else {
+            self.error(format!("{format} is not a column type."));
+            return;
+        };
+        let title = if title.trim().is_empty() {
+            default_title
         } else {
-            self.extra_columns
-                .retain(|(title, field)| title != which && field != which);
+            title.trim()
+        };
+        self.info(format!("Added column {title}."));
+        self.insert_column(SavedColumn {
+            title: title.to_string(),
+            format: format.to_string(),
+            visible: true,
+        });
+    }
+
+    /// Remove a column by its title or field, or go back to the Wireshark
+    /// profile's columns.
+    pub(super) fn remove_column(&mut self, which: &str) {
+        if which.is_empty() {
+            if self.state.columns.is_none() {
+                self.info("The columns are already the Wireshark profile's.");
+            } else {
+                self.set_column_list(None);
+                self.info("Columns reset to the Wireshark profile's.");
+            }
+            return;
         }
-        match before - self.extra_columns.len() {
-            0 if which.is_empty() => self.info("No columns have been added."),
-            0 => self.error(format!(
-                "No added column is called {which}. Columns from the Wireshark profile are changed in Wireshark."
-            )),
-            1 => self.info("Removed 1 column."),
-            n => self.info(format!("Removed {n} columns.")),
-        }
-        if before != self.extra_columns.len() {
-            self.columns_changed();
+        let mut list = self.column_list();
+        let custom = format!("%Cus:{which}:0");
+        let before = list.len();
+        list.retain(|c| c.title != which && c.format != custom);
+        if list.len() == before {
+            self.error(format!("There is no column called {which}."));
+        } else if !list.iter().any(|c| c.visible) {
+            self.error("That would leave no columns.");
+        } else {
+            self.set_column_list(Some(list));
+            self.info(format!("Removed column {which}."));
         }
     }
 
-    fn columns_changed(&mut self) {
-        if self.status.is_some() {
-            self.build_columns();
-            // Widths were measured for the old set of columns.
-            self.list.widths.clear();
-            self.refresh_list();
+    // ---- column editor ----------------------------------------------------
+
+    pub(super) fn open_column_editor(&mut self) {
+        if self.status.is_none() {
+            self.info("Open a capture first.");
+            return;
         }
+        if !self.can_arrange_columns() {
+            return;
+        }
+        self.overlay = Some(Overlay::Columns(ColumnEditor { selected: 0 }));
+    }
+
+    /// Apply `change` to the column list from the editor, keeping the cursor
+    /// on a sensible row.
+    pub(super) fn edit_columns(&mut self, change: ColumnEdit) {
+        let Some(Overlay::Columns(editor)) = &self.overlay else {
+            return;
+        };
+        let mut at = editor.selected;
+        let mut list = self.column_list();
+        if list.is_empty() {
+            return;
+        }
+        at = at.min(list.len() - 1);
+        match change {
+            ColumnEdit::Toggle => {
+                let shown = list.iter().filter(|c| c.visible).count();
+                if list[at].visible && shown == 1 {
+                    self.error("At least one column has to stay visible.");
+                    return;
+                }
+                list[at].visible = !list[at].visible;
+            }
+            ColumnEdit::Delete => {
+                if list.len() == 1
+                    || (list[at].visible && list.iter().filter(|c| c.visible).count() == 1)
+                {
+                    self.error("At least one column has to stay visible.");
+                    return;
+                }
+                list.remove(at);
+                at = at.min(list.len() - 1);
+            }
+            ColumnEdit::Move(by) => {
+                let to = at as i64 + by;
+                if to < 0 || to >= list.len() as i64 {
+                    return;
+                }
+                list.swap(at, to as usize);
+                at = to as usize;
+            }
+            ColumnEdit::Rename(title) => {
+                let title = title.trim();
+                if title.is_empty() {
+                    return;
+                }
+                list[at].title = title.to_string();
+            }
+        }
+        self.set_column_list(Some(list));
+        if let Some(Overlay::Columns(editor)) = &mut self.overlay {
+            editor.selected = at;
+        }
+    }
+
+    pub(super) fn built_in_column_menu(&mut self) {
+        let keys = "abcdefghijklmnopqrstuvwxyz";
+        let items = columns::BUILT_IN
+            .iter()
+            .zip(keys.chars())
+            .map(|((title, format), key)| MenuItem {
+                key,
+                label: (*title).to_string(),
+                action: Action::Command(format!("column type {format}")),
+            })
+            .collect();
+        self.open_menu("Add a column", items);
     }
 
     /// Add the field selected in the details pane as a column.

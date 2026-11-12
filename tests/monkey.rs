@@ -74,7 +74,15 @@ const PHRASES: &[&str] = &[
     ":follow tcp\n",
     ":column tcp.stream\n",
     ":column ip.ttl TTL\n",
-    ":column remove\n",
+    ":column reset\n",
+    ":column remove Length\n",
+    ":columns\n",
+    ":columns\nj jJrx\nd",
+    ":columns\nbc",
+    ":columns\nR",
+    ":theme\n",
+    ":theme nord\n",
+    ":theme default\n",
     ":marked\n",
     ":unmark\n",
     ":reload\n",
@@ -166,6 +174,7 @@ fn place(app: &App) -> &'static str {
         Some(Overlay::Menu(_)) => "menu",
         Some(Overlay::Follow(_)) => "follow stream",
         Some(Overlay::Stats(_)) => "statistics",
+        Some(Overlay::Columns(_)) => "column editor",
         None => match app.focus {
             Focus::Filter => "filter bar",
             Focus::List => "packet list",
@@ -262,6 +271,7 @@ fn random_input_never_breaks_the_app() {
             "help",
             "follow stream",
             "statistics",
+            "column editor",
         ] {
             assert!(
                 visited.contains(place),

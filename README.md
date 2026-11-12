@@ -36,8 +36,9 @@ rule and preference Wireshark has works here, with the same results.
   file that another program is still writing.
 - **Your Wireshark profile**: columns, colouring rules and preferences are
   picked up as they are; `-C` selects another profile.
-- **Columns on the fly**: press `C` on any field to add it as a column, or
-  `:column http.host Host`.
+- **Your own columns**: press `C` on any field to add it as a column, or
+  `:column http.host Host`. `:columns` opens an editor to reorder, hide,
+  rename and delete them, and the arrangement is remembered.
 - Mouse support, two layouts, zoom, and a `?` key that lists everything; the
   status bar shows the keys that matter where you are.
 - **Works on plain terminals**: ASCII drawing when the locale is not UTF-8,
@@ -230,6 +231,18 @@ and a hint:
 | `o / r`           | Sort by the next column / reverse the order             |
 | `f`               | Count only packets matching the display filter          |
 
+**Column editor**
+
+| Key     | Action                                     |
+| ------- | ------------------------------------------ |
+| `Space` | Show or hide the column                    |
+| `J / K` | Move the column down / up                  |
+| `r`     | Rename it                                  |
+| `a`     | Add a column for a field                   |
+| `b`     | Add one of the built-in column types       |
+| `d`     | Delete it                                  |
+| `R`     | Go back to the Wireshark profile's columns |
+
 **Commands**
 
 | Key                       | Action                                                        |
@@ -245,8 +258,10 @@ and a hint:
 | `:stat <name>`            | A protocol's statistics tree (http, http_req, dns, rtsp, ...) |
 | `:follow [proto]`         | Follow the selected packet's stream                           |
 | `:write <file>`           | Save the displayed packets                                    |
+| `:columns`                | Arrange the columns: order, visibility, titles                |
 | `:column <field> [title]` | Add a column showing a field                                  |
-| `:column remove [name]`   | Remove an added column (all, without a name)                  |
+| `:column remove <name>`   | Remove a column by its title or field                         |
+| `:column reset`           | Go back to the Wireshark profile's columns                    |
 | `:marked`                 | Show only marked packets                                      |
 | `:unmark`                 | Remove all marks                                              |
 | `:keylog <file>`          | Decrypt TLS with a key log file                               |
@@ -284,7 +299,8 @@ theme = "nord"             # colour theme, until you choose one with :theme
 ```
 
 Recent filters are remembered in `~/.local/state/packetshark/filters`, and
-choices made while running (the theme, for one) in `state.toml` beside it.
+choices made while running (the theme and the columns, for two) in
+`state.toml` beside it.
 The config file is yours: packetshark reads it and never writes to it.
 
 Row colours: `wireshark` paints rows with your colouring rules as the GUI
@@ -392,8 +408,6 @@ dropped the rest.
   4.2 and time references need 4.0; packetshark says so when you ask for
   them. Before 4.2 the delta times in the details pane are relative to the
   previous packet in the file even when a filter hides it.
-- **Added columns last for the session.** Columns you want every time belong
-  in your Wireshark profile, which packetshark reads.
 - Live capture was verified with a scripted stand-in for dumpcap, not against
   a real interface. TLS decryption is covered only by the optional
   real-capture walk (a capture with embedded secrets), not by the default

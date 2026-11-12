@@ -1784,6 +1784,7 @@ fn columns_can_be_added_and_removed() {
         return;
     };
     assert!(!h.line(2).contains("Stream"), "{}", h.line(2));
+    assert!(!h.app.columns_customised());
     h.keys(":column tcp.stream Stream\n");
     assert!(
         h.message().contains("Added column Stream"),
@@ -1825,19 +1826,162 @@ fn columns_can_be_added_and_removed() {
     assert!(h.line(2).contains("ip.ttl"), "{}", h.line(2));
 
     // Adding it twice, or adding nonsense, changes nothing.
+    let before = h.app.column_list().len();
     h.keys(":column ip.ttl\n");
     assert!(h.message().contains("already"), "{}", h.message());
     h.keys(":column no.such.field\n");
     assert!(h.message().contains("No column added"), "{}", h.message());
-    assert_eq!(h.app.extra_columns.len(), 2);
+    assert_eq!(h.app.column_list().len(), before);
 
+    // Any column can be removed, the profile's own included.
     h.keys(":column remove Stream\n");
     assert!(!h.line(2).contains("Stream"), "{}", h.line(2));
     assert!(h.line(2).contains("ip.ttl"), "{}", h.line(2));
-    h.keys(":column remove\n");
-    assert!(!h.line(2).contains("ip.ttl"), "{}", h.line(2));
-    h.keys(":column remove Source\n");
-    assert!(h.message().contains("Wireshark profile"), "{}", h.message());
+    h.keys(":column remove Length\n");
+    assert!(!h.line(2).contains("Length"), "{}", h.line(2));
+    h.keys(":column remove Nonsense\n");
+    assert!(
+        h.message().contains("no column called Nonsense"),
+        "{}",
+        h.message()
+    );
+    // ... and one command puts the Wireshark profile's columns back.
+    h.keys(":column reset\n");
+    assert!(!h.app.columns_customised());
+    assert!(
+        h.line(2).contains("Length") && !h.line(2).contains("ip.ttl"),
+        "{}",
+        h.line(2)
+    );
+    h.assert_screen_contains("40000 → 80");
+}
+
+#[test]
+fn the_column_editor_arranges_columns_and_remembers_them() {
+    use packetshark::config::Store;
+    let scratch = tempfile::tempdir().unwrap();
+    let store = Store::at(scratch.path().join("state.toml"));
+    let options = || Options {
+        store: store.clone(),
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::open_with(&pcap::web(), 110, 30, options()) else {
+        return;
+    };
+    let titles = |h: &Harness| -> Vec<String> {
+        h.app
+            .column_list()
+            .iter()
+            .filter(|c| c.visible)
+            .map(|c| c.title.clone())
+            .collect()
+    };
+    assert_eq!(
+        titles(&h),
+        [
+            "No.",
+            "Time",
+            "Source",
+            "Destination",
+            "Protocol",
+            "Length",
+            "Info"
+        ]
+    );
+
+    h.keys(":columns\n");
+    h.assert_screen_contains("Columns (from the Wireshark profile)");
+    h.assert_screen_contains("[x] Protocol");
+    // Hide Time (the second row).
+    h.keys("j ");
+    h.assert_screen_contains("[ ] Time");
+    assert!(!h.line(2).contains("Time"), "hidden at once: {}", h.line(2));
+    // Move Source below Destination.
+    h.keys("jJ");
+    // Rename Protocol, the row after the one that just moved.
+    h.keys("j");
+    h.key(KeyCode::Char('r'));
+    h.ctrl('u');
+    h.keys("Proto\n");
+    // Add a field, with a title, and a built-in type from the list.
+    h.key(KeyCode::Char('a'));
+    h.keys("ip.ttl TTL\n");
+    h.assert_screen_contains("[x] TTL");
+    h.key(KeyCode::Char('b'));
+    h.assert_screen_contains("Delta time");
+    h.keys("c");
+    h.assert_screen_contains("[x] Delta time");
+    // Delete Length.
+    h.keys("g");
+    for _ in 0..12 {
+        let on_length = match &h.app.overlay {
+            Some(Overlay::Columns(e)) => h.app.column_list()[e.selected].title == "Length",
+            _ => panic!("the editor closed:\n{}", h.screen()),
+        };
+        if on_length {
+            break;
+        }
+        h.keys("j");
+    }
+    h.keys("d");
+    h.key(KeyCode::Esc);
+    assert!(h.app.overlay.is_none());
+
+    let wanted = [
+        "No.",
+        "Destination",
+        "Source",
+        "Proto",
+        "TTL",
+        "Delta time",
+        "Info",
+    ];
+    assert_eq!(titles(&h), wanted);
+    let header = h.line(2);
+    let mut last = 0;
+    for title in wanted {
+        let at = header[last..]
+            .find(title)
+            .unwrap_or_else(|| panic!("{title} in {header}"));
+        last += at;
+    }
+    // The rows follow the new order: destination first, then source.
+    let (_, row) = h.find_line("40000 → 80").unwrap();
+    assert!(
+        row.find("93.184.216.34").unwrap() < row.find("10.0.0.2").unwrap(),
+        "{row}"
+    );
+
+    // The last visible column cannot be hidden or deleted.
+    h.keys(":columns\n");
+    for _ in 0..8 {
+        h.keys("gd");
+    }
+    assert_eq!(titles(&h).len(), 1, "{}", h.screen());
+    assert!(
+        h.message().contains("At least one column"),
+        "{}",
+        h.message()
+    );
+    h.keys(" ");
+    assert_eq!(titles(&h).len(), 1);
+    // Put the arrangement back for the restart check below.
+    h.keys("R");
+    h.assert_screen_contains("Columns (from the Wireshark profile)");
+    h.keys("j ");
+    h.key(KeyCode::Esc);
+    drop(h);
+
+    // A new run starts with the arrangement.
+    let Some(mut h) = Harness::open_with(&pcap::web(), 110, 30, options()) else {
+        return;
+    };
+    assert!(h.app.columns_customised());
+    assert_eq!(
+        titles(&h),
+        ["No.", "Source", "Destination", "Protocol", "Length", "Info"]
+    );
+    assert!(!h.line(2).contains("Time"), "{}", h.line(2));
     h.assert_screen_contains("40000 → 80");
 }
 

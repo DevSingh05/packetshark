@@ -74,6 +74,83 @@ pub fn help(app: &mut App, buf: &mut Buffer, body: Rect) {
     }
 }
 
+/// The column editor: every column, shown or hidden, in order.
+pub fn columns(app: &mut App, buf: &mut Buffer, body: Rect) {
+    let Some(Overlay::Columns(editor)) = &app.overlay else {
+        return;
+    };
+    let selected = editor.selected;
+    let list = app.column_list();
+    let hints = "Space show/hide  J/K move  r rename  a add field  b add built-in  d delete  R reset  Esc done";
+    let title_width = list
+        .iter()
+        .map(|c| width(&c.title))
+        .max()
+        .unwrap_or(0)
+        .max(5) as u16;
+    let kinds: Vec<String> = list
+        .iter()
+        .map(|c| crate::app::columns::describe_format(&c.format))
+        .collect();
+    let kind_width = kinds.iter().map(|k| width(k)).max().unwrap_or(0) as u16;
+    let w = (title_width + kind_width + 12)
+        .max(width(hints) as u16 + 4)
+        .min(body.width);
+    let h = (list.len() as u16 + 5).min(body.height);
+    let title = if app.columns_customised() {
+        "Columns"
+    } else {
+        "Columns (from the Wireshark profile)"
+    };
+    let inner = popup(app, buf, body, w, h, title);
+    if inner.height < 3 {
+        return;
+    }
+    let theme = &app.theme;
+    // Keep the cursor in view when there are more columns than rows.
+    let rows = inner.height.saturating_sub(2) as usize;
+    let top = selected.saturating_sub(rows.saturating_sub(1));
+    for (i, (column, kind)) in list.iter().zip(&kinds).enumerate().skip(top).take(rows) {
+        let y = inner.y + (i - top) as u16;
+        let style = if i == selected {
+            theme.popup_selected
+        } else if column.visible {
+            theme.popup
+        } else {
+            theme.popup.patch(theme.dim)
+        };
+        fill(
+            buf,
+            Rect {
+                y,
+                height: 1,
+                ..inner
+            },
+            style,
+        );
+        let mark = if column.visible { "[x]" } else { "[ ]" };
+        put(buf, inner.x + 1, y, 3, mark, style);
+        put(buf, inner.x + 5, y, title_width, &column.title, style);
+        put(
+            buf,
+            inner.x + 7 + title_width,
+            y,
+            inner.width.saturating_sub(8 + title_width),
+            kind,
+            style,
+        );
+    }
+    let footer = inner.y + inner.height - 1;
+    put(
+        buf,
+        inner.x + 1,
+        footer,
+        inner.width.saturating_sub(2),
+        &truncate(hints, inner.width.saturating_sub(2) as usize),
+        theme.popup.patch(theme.dim),
+    );
+}
+
 pub fn menu(app: &mut App, buf: &mut Buffer, body: Rect) {
     let Some(Overlay::Menu(menu)) = &app.overlay else {
         return;

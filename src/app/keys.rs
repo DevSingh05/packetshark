@@ -3,7 +3,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
-use super::{App, Focus, LayoutKind, Level, Overlay, Prompt, PromptKind};
+use super::{App, ColumnEdit, Focus, LayoutKind, Level, Overlay, Prompt, PromptKind};
 use crate::sharkd::{Request, Seek};
 use crate::text_input::{Edit, TextInput};
 
@@ -131,6 +131,17 @@ impl App {
                     }
                     PromptKind::Find => self.start_find(&text),
                     PromptKind::SaveStream => self.save_stream(&text),
+                    PromptKind::AddColumn => {
+                        let text = text.trim();
+                        let (field, title) = match text.split_once(char::is_whitespace) {
+                            Some((f, t)) => (f, Some(t)),
+                            None => (text, None),
+                        };
+                        if !field.is_empty() {
+                            self.add_column(field, title);
+                        }
+                    }
+                    PromptKind::RenameColumn => self.edit_columns(ColumnEdit::Rename(text)),
                 }
             }
             KeyCode::Up => {
@@ -477,11 +488,59 @@ impl App {
 
     // ---- overlays ---------------------------------------------------------
 
+    fn key_column_editor(&mut self, key: KeyEvent, selected: usize, closes: bool) {
+        let count = self.column_list().len();
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let select = |app: &mut App, to: usize| {
+            if let Some(Overlay::Columns(editor)) = &mut app.overlay {
+                editor.selected = to;
+            }
+        };
+        match key.code {
+            _ if closes => self.overlay = None,
+            // Moving the column itself: the shifted or Ctrl-ed version of
+            // moving the cursor.
+            KeyCode::Char('J') => self.edit_columns(ColumnEdit::Move(1)),
+            KeyCode::Char('K') => self.edit_columns(ColumnEdit::Move(-1)),
+            KeyCode::Down if shift || ctrl => self.edit_columns(ColumnEdit::Move(1)),
+            KeyCode::Up if shift || ctrl => self.edit_columns(ColumnEdit::Move(-1)),
+            KeyCode::Down | KeyCode::Char('j') => {
+                select(self, (selected + 1).min(count.saturating_sub(1)));
+            }
+            KeyCode::Up | KeyCode::Char('k') => select(self, selected.saturating_sub(1)),
+            KeyCode::Home | KeyCode::Char('g') => select(self, 0),
+            KeyCode::End | KeyCode::Char('G') => select(self, count.saturating_sub(1)),
+            KeyCode::Char(' ') | KeyCode::Enter => self.edit_columns(ColumnEdit::Toggle),
+            KeyCode::Char('d') | KeyCode::Delete => self.edit_columns(ColumnEdit::Delete),
+            KeyCode::Char('a') => self.open_prompt(PromptKind::AddColumn, ""),
+            KeyCode::Char('b') => self.built_in_column_menu(),
+            KeyCode::Char('r') => {
+                let title = self
+                    .column_list()
+                    .get(selected)
+                    .map(|c| c.title.clone())
+                    .unwrap_or_default();
+                self.open_prompt(PromptKind::RenameColumn, &title);
+            }
+            KeyCode::Char('R') => {
+                self.set_column_list(None);
+                select(self, 0);
+                self.info("Columns reset to the Wireshark profile's.");
+            }
+            _ => {}
+        }
+    }
+
     fn key_overlay(&mut self, key: KeyEvent) {
         if key.code == KeyCode::Char(':') && !matches!(self.overlay, Some(Overlay::Menu(_))) {
             return self.open_prompt(PromptKind::Command, "");
         }
         let closes = matches!(key.code, KeyCode::Esc | KeyCode::Char('q'));
+        if let Some(Overlay::Columns(editor)) = &self.overlay {
+            let selected = editor.selected;
+            return self.key_column_editor(key, selected, closes);
+        }
         match &mut self.overlay {
             None => {}
             Some(Overlay::Help { top }) => {
@@ -517,6 +576,8 @@ impl App {
                     self.run_action(action);
                 }
             }
+            // Handled above, before the overlay was borrowed.
+            Some(Overlay::Columns(_)) => {}
             Some(Overlay::Follow(view)) => {
                 if closes {
                     self.overlay = None;
@@ -638,7 +699,7 @@ impl App {
                     Overlay::Help { top } => *top = (*top as i64 + step).max(0) as usize,
                     Overlay::Follow(view) => view.scroll_by(step),
                     Overlay::Stats(view) => view.move_by(step),
-                    Overlay::Menu(_) => {}
+                    Overlay::Menu(_) | Overlay::Columns(_) => {}
                 }
             } else if mouse.kind == MouseEventKind::Down(MouseButton::Left)
                 && contains(self.areas.overlay, x, y)

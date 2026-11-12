@@ -1,5 +1,6 @@
 //! The packet list's columns, taken from the user's Wireshark profile.
 
+use crate::config::SavedColumn;
 use crate::sharkd::types::{Info, Status};
 
 /// How the time column is displayed.
@@ -135,17 +136,56 @@ pub struct Columns {
     numbers: Vec<(String, usize)>,
 }
 
+/// The built-in column types offered when adding a column, as (title, format).
+pub const BUILT_IN: &[(&str, &str)] = &[
+    ("No.", "%m"),
+    ("Time", "%t"),
+    ("Delta time", "%Tt"),
+    ("Delta time displayed", "%Gt"),
+    ("Absolute time", "%At"),
+    ("Date and time", "%Yt"),
+    ("UTC time", "%Aut"),
+    ("Source", "%s"),
+    ("Destination", "%d"),
+    ("Source port", "%S"),
+    ("Destination port", "%D"),
+    ("Protocol", "%p"),
+    ("Length", "%L"),
+    ("Cumulative bytes", "%B"),
+    ("Info", "%i"),
+];
+
+/// What a column shows, in words, for the column editor.
+pub fn describe_format(format: &str) -> String {
+    if let Some(custom) = format.strip_prefix("%Cus:") {
+        // `<fields>:<occurrence>`, with possibly more after it.
+        let field = custom.split(':').next().unwrap_or(custom);
+        return format!("field {field}");
+    }
+    match BUILT_IN.iter().find(|(_, code)| *code == format) {
+        Some((title, _)) => (*title).to_lowercase(),
+        None => format!("Wireshark format {format}"),
+    }
+}
+
 impl Columns {
-    pub fn new(status: &Status, info: Option<&Info>) -> Columns {
-        let mut cols: Vec<Column> = status
-            .column_info
-            .iter()
-            .filter(|c| c.visible)
-            .map(|c| Column::describe(&c.title, &c.format))
-            .collect();
-        if cols.is_empty() {
-            // Older sharkd: titles only. Guess the usual formats from the titles.
-            cols = status
+    /// The columns of the Wireshark profile, hidden ones included.
+    pub fn profile_list(status: &Status) -> Vec<SavedColumn> {
+        let saved = |title: &str, format: &str, visible: bool| SavedColumn {
+            title: title.to_string(),
+            format: format.to_string(),
+            visible,
+        };
+        if !status.column_info.is_empty() {
+            return status
+                .column_info
+                .iter()
+                .map(|c| saved(&c.title, &c.format, c.visible))
+                .collect();
+        }
+        if !status.columns.is_empty() {
+            // Wireshark 4.2: titles only. Guess the usual formats from them.
+            return status
                 .columns
                 .iter()
                 .map(|title| {
@@ -159,26 +199,37 @@ impl Columns {
                         "Info" => "%i",
                         _ => "%?",
                     };
-                    Column::describe(title, format)
+                    saved(title, format, true)
                 })
                 .collect();
         }
-        if cols.is_empty() {
-            // Wireshark before 4.2 does not say what the columns are. These
-            // are the ones every profile starts with.
-            cols = [
-                ("No.", "%m"),
-                ("Time", "%t"),
-                ("Source", "%s"),
-                ("Destination", "%d"),
-                ("Protocol", "%p"),
-                ("Length", "%L"),
-                ("Info", "%i"),
-            ]
-            .into_iter()
-            .map(|(title, format)| Column::describe(title, format))
+        // Wireshark before 4.2 does not say what the columns are. These are
+        // the ones every profile starts with.
+        [
+            ("No.", "%m"),
+            ("Time", "%t"),
+            ("Source", "%s"),
+            ("Destination", "%d"),
+            ("Protocol", "%p"),
+            ("Length", "%L"),
+            ("Info", "%i"),
+        ]
+        .into_iter()
+        .map(|(title, format)| saved(title, format, true))
+        .collect()
+    }
+
+    pub fn new(status: &Status, info: Option<&Info>) -> Columns {
+        Self::from_list(&Self::profile_list(status), info)
+    }
+
+    /// The visible columns of `list`, ready to draw and to ask sharkd for.
+    pub fn from_list(list: &[SavedColumn], info: Option<&Info>) -> Columns {
+        let mut cols: Vec<Column> = list
+            .iter()
+            .filter(|c| c.visible)
+            .map(|c| Column::describe(&c.title, &c.format))
             .collect();
-        }
         if !cols.iter().any(|c| c.flexible)
             && let Some(last) = cols.last_mut()
         {
@@ -232,18 +283,6 @@ impl Columns {
     /// numbers the built-in ones, or the list cannot be described to it.
     pub fn can_customize(&self) -> bool {
         !self.numbers.is_empty()
-    }
-
-    /// Add a column showing `field`, just before the column that takes the
-    /// leftover width (normally Info).
-    pub fn add_custom(&mut self, title: &str, field: &str) {
-        let column = Column::describe(title, &format!("%Cus:{field}:0"));
-        let at = self
-            .cols
-            .iter()
-            .position(|c| c.flexible)
-            .unwrap_or(self.cols.len());
-        self.cols.insert(at, column);
     }
 
     /// Whether the time format can be changed (sharkd told us its column numbers).

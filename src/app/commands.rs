@@ -57,19 +57,27 @@ impl App {
                     None => (arg, ""),
                 };
                 match verb {
-                    "" => {
-                        if self.extra_columns.is_empty() {
-                            self.info(
-                                "Usage: :column <field> [title] | :column remove [name] (or C on a field)",
-                            );
-                        } else {
-                            let names: Vec<&str> =
-                                self.extra_columns.iter().map(|(t, _)| t.as_str()).collect();
-                            self.info(format!("Added columns: {}", names.join(", ")));
-                        }
+                    "" | "edit" => self.open_column_editor(),
+                    "remove" | "rm" | "del" | "delete" if rest.is_empty() => {
+                        self.error("Usage: :column remove <title or field>, or :column reset");
                     }
                     "remove" | "rm" | "del" | "delete" => self.remove_column(rest),
                     "reset" | "clear" => self.remove_column(""),
+                    // From the column editor's list of built-in types.
+                    "type" => {
+                        let (format, title) = match rest.split_once(char::is_whitespace) {
+                            Some((f, t)) => (f, t),
+                            None => (rest, ""),
+                        };
+                        self.add_built_in_column(format, title);
+                        self.open_column_editor();
+                        if let Some(Overlay::Columns(editor)) = &mut self.overlay {
+                            let wanted = self.state.columns.as_ref().and_then(|list| {
+                                list.iter().position(|c| c.format == format)
+                            });
+                            editor.selected = wanted.unwrap_or(0);
+                        }
+                    }
                     "add" => {
                         let (field, title) = match rest.split_once(char::is_whitespace) {
                             Some((f, t)) => (f, Some(t)),

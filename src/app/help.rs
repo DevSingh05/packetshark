@@ -112,6 +112,18 @@ pub const SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: "Column editor",
+        keys: &[
+            ("Space", "Show or hide the column"),
+            ("J / K", "Move the column down / up"),
+            ("r", "Rename it"),
+            ("a", "Add a column for a field"),
+            ("b", "Add one of the built-in column types"),
+            ("d", "Delete it"),
+            ("R", "Go back to the Wireshark profile's columns"),
+        ],
+    },
+    Section {
         title: "Commands",
         keys: &[
             (":<number>", "Go to a packet"),
@@ -131,10 +143,15 @@ pub const SECTIONS: &[Section] = &[
             ),
             (":follow [proto]", "Follow the selected packet's stream"),
             (":write <file>", "Save the displayed packets"),
+            (":columns", "Arrange the columns: order, visibility, titles"),
             (":column <field> [title]", "Add a column showing a field"),
             (
-                ":column remove [name]",
-                "Remove an added column (all, without a name)",
+                ":column remove <name>",
+                "Remove a column by its title or field",
+            ),
+            (
+                ":column reset",
+                "Go back to the Wireshark profile's columns",
             ),
             (":marked", "Show only marked packets"),
             (":unmark", "Remove all marks"),
