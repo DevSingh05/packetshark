@@ -31,6 +31,24 @@ pub fn sharkd_path() -> Option<PathBuf> {
     }
 }
 
+/// Run `start`, which executes a script the test has just written, again
+/// if the system says the file is busy. On Linux a script cannot be run
+/// while any process holds it open for writing, and for a moment a child
+/// that another test's thread has just forked still does.
+pub fn retry_while_busy<T, E: std::fmt::Display>(mut start: impl FnMut() -> Result<T, E>) -> T {
+    let mut tries = 0;
+    loop {
+        match start() {
+            Ok(value) => return value,
+            Err(e) if tries < 200 && e.to_string().contains("ext file busy") => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("could not start the helper script: {e}"),
+        }
+    }
+}
+
 pub struct Harness {
     pub app: App,
     pub rx: Receiver<Event>,

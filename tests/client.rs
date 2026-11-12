@@ -123,7 +123,7 @@ fn survives_a_misbehaving_sharkd() {
             "\n\n{\"jsonrpc\":\"2.0\",\"id\":8,\"result\":{\"status\":\"OK\"}}\n",
         ],
     );
-    let mut c = Client::spawn(&Launch::new(program)).unwrap();
+    let mut c = common::retry_while_busy(|| Client::spawn(&Launch::new(program.clone())));
 
     assert!(
         matches!(c.call::<Value>("a", Value::Null), Err(Error::Protocol(_))),
@@ -186,7 +186,7 @@ fn a_reply_cut_off_by_a_crash_counts_as_sharkd_exiting() {
         .replace("    2) cat", "    2) trap 'exit 0' EXIT; cat");
     let script = script.replace("reply1' ;;", "reply1'; exit 0 ;;");
     std::fs::write(&program, script).unwrap();
-    let mut c = Client::spawn(&Launch::new(program)).unwrap();
+    let mut c = common::retry_while_busy(|| Client::spawn(&Launch::new(program.clone())));
     let ok: LoadResult = c.call("a", Value::Null).unwrap();
     assert_eq!(ok.status, "OK");
     let err = c.call::<Vec<FrameRow>>("b", Value::Null).unwrap_err();

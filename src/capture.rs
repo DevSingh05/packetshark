@@ -485,7 +485,17 @@ mod tests {
         )
         .unwrap();
         fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-        let mut cap = Capture::live(&script, &["nope0".into()], None).unwrap();
+        // A script cannot be run on Linux while a child that another test
+        // has just forked still holds it open for writing.
+        let mut cap = loop {
+            match Capture::live(&script, &["nope0".into()], None) {
+                Ok(cap) => break cap,
+                Err(e) if e.contains("ext file busy") => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("{e}"),
+            }
+        };
         wait_until("dumpcap to exit", || !cap.running());
         assert_eq!(cap.failure().as_deref(), Some("no such device"));
         // The child has been reaped; stop must return at once without
