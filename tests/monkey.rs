@@ -110,6 +110,8 @@ const PHRASES: &[&str] = &[
     ":3\n",
     ":999999\n",
     "Ft",
+    "Ft/get\nnN",
+    "Ft//h.st/\n",
     "Fh",
     "Sc",
     "Se",

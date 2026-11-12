@@ -22,6 +22,9 @@ Notable changes to packetshark. The format follows
   columns, as text, a regular expression, hex or a display filter, with or
   without regard to case. The match is highlighted where the search lands,
   and a long search can be stopped with Esc.
+- `/` in Follow Stream searches the stream, as text or `/regex/`; `n` and
+  `N` step through the matches. The title shows how many packets carried
+  the stream and how often it changed sides.
 - Key mappings: `:map <f5> :conv<enter>` makes a key type a sequence of
   keys, written as in vim, and is remembered.
 - `25G` and `25gg` go to a row; `Ctrl-w w` and `Ctrl-w =` switch pane and

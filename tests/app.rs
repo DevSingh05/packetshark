@@ -2645,3 +2645,87 @@ fn a_details_search_reads_on_through_a_long_capture_and_can_be_stopped() {
     assert!(h.message().contains("Search stopped"), "{}", h.message());
     assert_eq!(h.app.list.selected_num(), Some(1), "nothing moved");
 }
+
+#[test]
+fn a_followed_stream_can_be_searched() {
+    use packetshark::app::follow::Mode;
+    use packetshark::config::Store;
+    let scratch = tempfile::tempdir().unwrap();
+    let store = Store::at(scratch.path().join("state.toml"));
+    // A response long enough to need scrolling.
+    let body: String = (0..300)
+        .map(|i| format!("row {i:03} of the report\n"))
+        .collect();
+    let mut capture = pcap::Pcap::new();
+    capture.http(40000, "example.com", "/report", &body);
+    let options = || Options {
+        store: store.clone(),
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::open_with(&capture, 100, 30, options()) else {
+        return;
+    };
+    let top_line = |h: &mut Harness| h.line(2);
+    h.keys("jjj");
+    h.key(KeyCode::Char('F'));
+    h.key(KeyCode::Char('t'));
+    h.assert_screen_contains("Follow TCP stream");
+    // How the conversation went: one request, the reply in several packets.
+    assert!(h.line(0).contains("packets · 1 turn"), "{}", h.line(0));
+
+    // Text in any case; the match comes to the top and is picked out.
+    h.keys("/ROW 150\n");
+    assert!(
+        top_line(&mut h).contains("row 150 of the report"),
+        "{}",
+        top_line(&mut h)
+    );
+    let x = top_line(&mut h).find("row 150").unwrap() as u16;
+    assert_eq!(
+        h.bg_at(x, 2),
+        h.app.theme.hex_highlight.bg,
+        "the match is highlighted"
+    );
+    assert_ne!(
+        h.bg_at(x + 9, 2),
+        h.app.theme.hex_highlight.bg,
+        "and only the match"
+    );
+
+    // A regular expression between slashes; n and N step through, and wrap.
+    h.keys("//row 2[0-9]5/\n");
+    assert!(top_line(&mut h).contains("row 205"), "{}", top_line(&mut h));
+    h.keys("n");
+    assert!(top_line(&mut h).contains("row 215"), "{}", top_line(&mut h));
+    h.keys("N");
+    assert!(top_line(&mut h).contains("row 205"), "{}", top_line(&mut h));
+    h.keys("N");
+    assert!(h.message().contains("wrapped"), "{}", h.message());
+    h.assert_screen_contains("row 295");
+
+    // Nothing found, and a mistake in the expression.
+    h.keys("/no such text\n");
+    assert!(h.message().contains("does not contain"), "{}", h.message());
+    h.keys("//row (/\n");
+    assert!(
+        h.message().contains("Not a regular expression"),
+        "{}",
+        h.message()
+    );
+
+    // The way of showing the data is remembered for the next stream.
+    h.key(KeyCode::Char('m'));
+    h.assert_screen_contains("hex dump");
+    h.key(KeyCode::Esc);
+    drop(h);
+    let Some(mut h) = Harness::open_with(&capture, 100, 30, options()) else {
+        return;
+    };
+    h.keys("jjj");
+    h.key(KeyCode::Char('F'));
+    h.key(KeyCode::Char('t'));
+    match &h.app.overlay {
+        Some(Overlay::Follow(view)) => assert_eq!(view.mode, Mode::HexDump),
+        _ => panic!("no stream:\n{}", h.screen()),
+    }
+}

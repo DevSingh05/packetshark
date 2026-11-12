@@ -99,6 +99,8 @@ pub const SECTIONS: &[Section] = &[
     Section {
         title: "Follow stream",
         keys: &[
+            ("/", "Search the stream: text, or /regex/"),
+            ("n / N", "Next / previous match in the stream"),
             ("m", "Change mode (ASCII / hex dump / raw)"),
             ("d", "Show both directions / client only / server only"),
             ("f", "Filter the packet list to this stream"),

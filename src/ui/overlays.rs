@@ -217,11 +217,25 @@ pub fn follow(app: &mut App, buf: &mut Buffer, area: Rect) {
     fill(buf, area, app.theme.text);
     let (client_style, server_style, dim) = (app.theme.client, app.theme.server, app.theme.dim);
     let (text_style, error_style) = (app.theme.text, app.theme.error);
+    let found_style = app.theme.hex_highlight;
     let Some(Overlay::Follow(view)) = &app.overlay else {
         return;
     };
     let title = format!("Follow {} stream", view.protocol);
-    let right = view.filter.clone();
+    // How the conversation went: packets that carried data, and how many
+    // times it changed sides.
+    let (client_packets, server_packets, turns) = view.shape();
+    let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+    let right = if view.loading || view.error.is_some() {
+        view.filter.clone()
+    } else {
+        format!(
+            "{} · {} · {}",
+            view.filter,
+            count(client_packets + server_packets, "packet"),
+            count(turns, "turn")
+        )
+    };
     let content = title_bar(app, buf, area, true, &title, &right);
     if content.height < 3 {
         return;
@@ -247,7 +261,6 @@ pub fn follow(app: &mut App, buf: &mut Buffer, area: Rect) {
     view.height = body.height;
 
     // Legend: who is who, and how much each side sent.
-    let mut x = legend.x + 1;
     let parts = [
         (
             format!(
@@ -266,37 +279,42 @@ pub fn follow(app: &mut App, buf: &mut Buffer, area: Rect) {
             server_style,
         ),
     ];
-    for (text, style) in parts {
-        put(
-            buf,
-            x,
-            legend.y,
-            legend.width.saturating_sub(x - legend.x),
-            &text,
-            style,
-        );
-        x += width(&text) as u16 + 3;
-    }
     let side = match view.side {
         Side::Both => "both directions",
         Side::Client => "client only",
         Side::Server => "server only",
     };
+    let right = format!("{} · {side}", view.mode.name());
     put_right(
         buf,
         legend.x,
         legend.y,
         legend.width.saturating_sub(1),
-        &format!("{} · {side}", view.mode.name()),
+        &right,
         dim,
     );
+    // The two sides give way to the right-hand text rather than run into it.
+    let room = legend.width.saturating_sub(width(&right) as u16 + 3);
+    let mut x = legend.x + 1;
+    for (text, style) in parts {
+        let left = room.saturating_sub(x - legend.x);
+        put(
+            buf,
+            x,
+            legend.y,
+            left,
+            &truncate(&text, left as usize),
+            style,
+        );
+        x += width(&text) as u16 + 3;
+    }
 
     put(
         buf,
         footer.x + 1,
         footer.y,
         footer.width.saturating_sub(1),
-        "m mode · d direction · f filter to stream · Enter go to packet · w save · y copy · Esc close",
+        "/ search · n N next, previous · m mode · d direction · f filter to stream · Enter go to packet · w save · y copy · Esc close",
         dim,
     );
 
@@ -321,28 +339,40 @@ pub fn follow(app: &mut App, buf: &mut Buffer, area: Rect) {
         }
         view.top
     };
-    let lines = view.lines(body.width.saturating_sub(1));
-    for (line, entry) in lines
+    let shown: Vec<(String, bool)> = view
+        .lines(body.width.saturating_sub(1))
         .iter()
         .skip(top)
         .take(body.height as usize)
-        .enumerate()
-    {
-        let style = if entry.server {
-            server_style
-        } else {
-            client_style
-        };
+        .map(|entry| (entry.text.clone(), entry.server))
+        .collect();
+    for (line, (text, server)) in shown.iter().enumerate() {
+        let style = if *server { server_style } else { client_style };
+        let y = body.y + line as u16;
         put(
             buf,
             body.x + 1,
-            body.y + line as u16,
+            y,
             body.width - 1,
-            &entry.text,
+            text,
             text_style.patch(style),
         );
+        // What the stream search matched, picked out on top of the line.
+        for (start, end) in view.matches_in(text) {
+            let x = body.x + 1 + width(&text[..start]) as u16;
+            if x < body.x + body.width {
+                put(
+                    buf,
+                    x,
+                    y,
+                    body.x + body.width - x,
+                    &text[start..end],
+                    found_style,
+                );
+            }
+        }
     }
-    let total = lines.len();
+    let total = view.line_count();
     if total > body.height as usize {
         let last = (top + body.height as usize).min(total);
         let position = format!(" {}–{} of {} ", top + 1, last, total);

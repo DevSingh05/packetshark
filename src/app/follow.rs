@@ -28,6 +28,23 @@ impl Mode {
             Mode::Raw => "raw hex",
         }
     }
+
+    /// The name the choice is remembered under.
+    pub fn key(self) -> &'static str {
+        match self {
+            Mode::Ascii => "ascii",
+            Mode::HexDump => "hex",
+            Mode::Raw => "raw",
+        }
+    }
+
+    pub fn parse(key: &str) -> Mode {
+        match key {
+            "hex" => Mode::HexDump,
+            "raw" => Mode::Raw,
+            _ => Mode::Ascii,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -87,6 +104,8 @@ pub struct FollowView {
     lines: Vec<Line>,
     /// Width the cached lines were laid out for; 0 means they must be rebuilt.
     laid_out_for: u16,
+    /// What `/` last searched the stream for.
+    search: Option<regex::Regex>,
 }
 
 impl FollowView {
@@ -171,6 +190,93 @@ impl FollowView {
     fn clamp(&mut self) {
         let max_top = self.lines.len().saturating_sub(self.height.max(1) as usize);
         self.top = self.top.min(max_top);
+    }
+
+    /// Search the stream's text as it is shown. `text` is plain text in any
+    /// case, or a regular expression when written between slashes.
+    pub fn set_search(&mut self, text: &str) -> Result<(), String> {
+        let text = text.trim();
+        if text.is_empty() {
+            self.search = None;
+            return Ok(());
+        }
+        let pattern = match text.strip_prefix('/').and_then(|t| t.strip_suffix('/')) {
+            Some(regex) if !regex.is_empty() => regex.to_string(),
+            _ => regex::escape(text),
+        };
+        let regex = regex::RegexBuilder::new(&pattern)
+            .case_insensitive(true)
+            .size_limit(1 << 20)
+            .build()
+            .map_err(|e| {
+                let reason = e.to_string();
+                format!(
+                    "Not a regular expression: {}",
+                    reason.lines().last().unwrap_or(&reason).trim()
+                )
+            })?;
+        self.search = Some(regex);
+        Ok(())
+    }
+
+    pub fn searching(&self) -> bool {
+        self.search.is_some()
+    }
+
+    /// Where the search matches in `line`, as byte ranges.
+    pub fn matches_in(&self, line: &str) -> Vec<(usize, usize)> {
+        match &self.search {
+            Some(regex) => regex
+                .find_iter(line)
+                .map(|m| (m.start(), m.end()))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Bring the next (or previous) line that matches to the top. Returns
+    /// whether there is one, and whether finding it meant wrapping round.
+    /// `from_here` also considers the line already at the top, as a new
+    /// search should.
+    pub fn find(&mut self, forward: bool, from_here: bool) -> Option<bool> {
+        let regex = self.search.as_ref()?;
+        let n = self.lines.len();
+        if n == 0 {
+            return None;
+        }
+        let start = if from_here { 0 } else { 1 };
+        for step in start..=n {
+            let index = if forward {
+                (self.top + step) % n
+            } else {
+                (self.top + n - step % n) % n
+            };
+            if regex.is_match(&self.lines[index].text) {
+                let wrapped = if forward {
+                    index < self.top
+                } else {
+                    index > self.top
+                };
+                // The last screenful cannot be scrolled to the top; a match
+                // there is on screen all the same.
+                self.top = index;
+                self.clamp();
+                return Some(wrapped && step != 0);
+            }
+        }
+        None
+    }
+
+    /// How many packets carry the stream's payload, and how many times the
+    /// conversation changed sides.
+    pub fn shape(&self) -> (usize, usize, usize) {
+        let client = self.chunks.iter().filter(|c| !c.server).count();
+        let turns = self
+            .chunks
+            .windows(2)
+            .filter(|pair| pair[0].server != pair[1].server)
+            .count();
+        (client, self.chunks.len() - client, turns)
     }
 
     /// Frame number of the first visible line, for "go to packet".

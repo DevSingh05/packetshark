@@ -25,7 +25,8 @@ rule and preference Wireshark has works here, with the same results.
 - **Large captures.** Only the rows on screen are fetched, so a
   million-packet capture scrolls like a small one (see [Performance](#performance)).
 - **Follow Stream** for TCP, UDP, TLS, HTTP, HTTP/2, QUIC and the rest, as
-  text, hex dump or raw bytes; save the payload or filter down to the stream.
+  text, hex dump or raw bytes; search it, save the payload or filter down to
+  the stream.
 - **Statistics**: conversations, endpoints, protocol hierarchy, expert
   information, per-protocol trees, and exporting objects (HTTP, SMB, TFTP, ...).
 - **Find** in packet bytes, in the details or in the summary, as text, a
@@ -228,6 +229,8 @@ and a hint:
 
 | Key     | Action                                           |
 | ------- | ------------------------------------------------ |
+| `/`     | Search the stream: text, or /regex/              |
+| `n / N` | Next / previous match in the stream              |
 | `m`     | Change mode (ASCII / hex dump / raw)             |
 | `d`     | Show both directions / client only / server only |
 | `f`     | Filter the packet list to this stream            |

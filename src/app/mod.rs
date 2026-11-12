@@ -172,6 +172,8 @@ pub enum PromptKind {
     Command,
     Find,
     SaveStream,
+    /// Text to look for in the stream being followed.
+    FollowSearch,
     /// A field, and optionally a title, for a new column.
     AddColumn,
     RenameColumn,
@@ -195,6 +197,7 @@ impl PromptKind {
             PromptKind::Command => ":",
             PromptKind::Find => "Find: ",
             PromptKind::SaveStream => "Save stream to: ",
+            PromptKind::FollowSearch => "Search the stream (text, or /regex/): ",
             PromptKind::AddColumn => "Field for the new column, then a title if you like: ",
             PromptKind::RenameColumn => "New title: ",
         }
@@ -1322,7 +1325,12 @@ impl App {
     // ---- windows ----------------------------------------------------------
 
     fn open_follow(&mut self, protocol: &str, filter: &str) {
-        self.overlay = Some(Overlay::Follow(Box::new(FollowView::new(protocol, filter))));
+        let mut view = FollowView::new(protocol, filter);
+        // Shown the way it was last looked at.
+        if let Some(mode) = &self.state.follow_mode {
+            view.mode = follow::Mode::parse(mode);
+        }
+        self.overlay = Some(Overlay::Follow(Box::new(view)));
         self.send(Request::Follow {
             protocol: protocol.to_string(),
             filter: filter.to_string(),

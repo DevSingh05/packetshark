@@ -207,6 +207,7 @@ impl App {
                     }
                     PromptKind::Find => self.start_find(&text),
                     PromptKind::SaveStream => self.save_stream(&text),
+                    PromptKind::FollowSearch => self.search_stream(&text),
                     PromptKind::AddColumn => {
                         let text = text.trim();
                         let (field, title) = match text.split_once(char::is_whitespace) {
@@ -722,6 +723,35 @@ impl App {
 
     // ---- overlays ---------------------------------------------------------
 
+    /// Start a search of the stream being followed.
+    fn search_stream(&mut self, text: &str) {
+        let Some(Overlay::Follow(view)) = &mut self.overlay else {
+            return;
+        };
+        match view.set_search(text) {
+            Err(e) => self.error(e),
+            Ok(()) if !view.searching() => {}
+            Ok(()) => match view.find(true, true) {
+                Some(_) => {}
+                None => self.info("The stream does not contain that."),
+            },
+        }
+    }
+
+    fn step_stream_search(&mut self, forward: bool) {
+        let Some(Overlay::Follow(view)) = &mut self.overlay else {
+            return;
+        };
+        if !view.searching() {
+            return self.info("Nothing to search for yet. Press / to search the stream.");
+        }
+        match view.find(forward, false) {
+            Some(true) => self.info("Search wrapped around."),
+            Some(false) => {}
+            None => self.info("The stream does not contain that."),
+        }
+    }
+
     fn key_column_editor(&mut self, key: KeyEvent, selected: usize, closes: bool) {
         let count = self.column_list().len();
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -829,7 +859,12 @@ impl App {
                     KeyCode::Char('m') => {
                         let mode = view.mode.next();
                         view.set_mode(mode);
+                        self.state.follow_mode = Some(mode.key().to_string());
+                        self.save_state();
                     }
+                    KeyCode::Char('/') => self.open_prompt(PromptKind::FollowSearch, ""),
+                    KeyCode::Char('n') => self.step_stream_search(true),
+                    KeyCode::Char('N') => self.step_stream_search(false),
                     KeyCode::Char('d') => {
                         let side = view.side.next();
                         view.set_side(side);
