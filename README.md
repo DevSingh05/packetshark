@@ -328,6 +328,10 @@ fixtures, privileges or network, and they are skipped when Wireshark is not
 installed. `tests/docs.rs` fails if the key reference above drifts from the
 in-app help.
 
+`tests/monkey.rs` throws random keys, mouse events, pastes and resizes at the
+app and fails if it panics or stops responding. The default run is short;
+`PACKETSHARK_MONKEY_EVENTS=20000 cargo test --test monkey` runs for longer.
+
 Two more tests are opt-in because they need files that are not in this
 repository:
 
