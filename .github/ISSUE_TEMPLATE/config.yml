@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/DevSingh05/packetshark/security/advisories/new
+    about: Please report security problems privately, not in a public issue.
+  - name: A protocol is decoded wrongly
+    url: https://gitlab.com/wireshark/wireshark/-/issues
+    about: Dissection is done by Wireshark. If Wireshark shows the same thing, report it there.

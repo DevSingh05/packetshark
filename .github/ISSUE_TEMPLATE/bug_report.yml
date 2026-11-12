@@ -1,0 +1,42 @@
+name: Bug report
+description: Something packetshark does wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: >-
+        The command you ran and the keys you pressed. A capture that shows the
+        problem helps a great deal; cut it down with editcap if it holds
+        private data.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: packetshark version
+      description: The output of `packetshark --version`
+    validations:
+      required: true
+  - type: input
+    id: wireshark
+    attributes:
+      label: Wireshark version
+      description: The first line of `sharkd -v`
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Operating system and terminal
+      placeholder: macOS 15, Ghostty; or Ubuntu 24.04 over SSH in tmux
+    validations:
+      required: true

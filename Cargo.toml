@@ -10,6 +10,7 @@ repository = "https://github.com/DevSingh05/packetshark"
 homepage = "https://github.com/DevSingh05/packetshark"
 keywords = ["wireshark", "pcap", "tui", "network", "sharkd"]
 categories = ["command-line-utilities", "network-programming"]
+exclude = [".github/", ".editorconfig", ".prettierignore", ".prettierrc.toml", ".taplo.toml"]
 
 [dependencies]
 anyhow = "1.0.104"

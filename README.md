@@ -1,5 +1,9 @@
 # packetshark
 
+[![CI](https://github.com/DevSingh05/packetshark/actions/workflows/ci.yml/badge.svg)](https://github.com/DevSingh05/packetshark/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/DevSingh05/packetshark)](https://github.com/DevSingh05/packetshark/releases/latest)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
 A terminal UI for Wireshark. Packet list, protocol details and bytes in three
 panes, with display filters, stream following and statistics, in one small
 binary that runs anywhere you have a shell.
@@ -373,6 +377,12 @@ PACKETSHARK_PERF_PCAP=big.pcap cargo test --release --test perf -- --ignored --n
 # details, bytes, follow, statistics, filters; fails on any error
 PACKETSHARK_REAL_DIR=captures/ cargo test --release --test real -- --ignored --nocapture
 ```
+
+## Contributing
+
+Bug reports and patches are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+Security problems are reported privately, as [SECURITY.md](SECURITY.md)
+describes. Changes between releases are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits and licence
 
