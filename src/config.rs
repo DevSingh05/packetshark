@@ -203,7 +203,8 @@ pub struct FileMark {
 pub struct FindPrefs {
     /// `list`, `details` or `bytes`.
     pub target: String,
-    /// `string`, `regex`, `hex` or `filter`.
+    /// `auto` (a filter if it is one, else text), `string`, `regex`, `hex`
+    /// or `filter`.
     pub kind: String,
     pub case_sensitive: bool,
 }
@@ -212,7 +213,7 @@ impl Default for FindPrefs {
     fn default() -> Self {
         FindPrefs {
             target: "bytes".into(),
-            kind: "string".into(),
+            kind: "auto".into(),
             case_sensitive: false,
         }
     }

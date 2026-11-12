@@ -937,6 +937,7 @@ dependencies = [
  "dirs",
  "libc",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

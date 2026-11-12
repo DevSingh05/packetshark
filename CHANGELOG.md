@@ -18,6 +18,10 @@ Notable changes to packetshark. The format follows
 - Marks as in vim: `ma` sets one, `'a` goes to it, `''` goes back. An
   upper-case mark remembers its capture file and is kept between runs.
   `:marks` lists them.
+- Find (`s`) searches packet bytes, the details tree or the summary
+  columns, as text, a regular expression, hex or a display filter, with or
+  without regard to case. The match is highlighted where the search lands,
+  and a long search can be stopped with Esc.
 - Key mappings: `:map <f5> :conv<enter>` makes a key type a sequence of
   keys, written as in vim, and is remembered.
 - `25G` and `25gg` go to a row; `Ctrl-w w` and `Ctrl-w =` switch pane and

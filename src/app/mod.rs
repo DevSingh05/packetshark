@@ -10,6 +10,7 @@ pub mod follow;
 pub mod help;
 pub mod keymap;
 pub mod list;
+pub mod search;
 pub mod stats;
 
 mod commands;
@@ -30,7 +31,6 @@ use crate::sharkd::types::{Info, Status};
 use crate::sharkd::{Launch, Purpose, Reply, Request, Seek, Worker};
 use crate::text_input::TextInput;
 use crate::theme::{RowColors, Theme};
-use crate::util::filter_quote;
 
 use columns::{Columns, TimeFormat};
 use detail::{Detail, HexState, TreeState};
@@ -180,20 +180,30 @@ pub enum PromptKind {
 #[derive(Debug)]
 pub struct Prompt {
     pub kind: PromptKind,
+    /// What is shown before the text being typed.
+    pub label: String,
     pub input: TextInput,
     /// Completions on offer, for the command line.
     pub candidates: cmdline::Candidates,
 }
 
-impl Prompt {
-    pub fn label(&self) -> &'static str {
-        match self.kind {
+impl PromptKind {
+    /// What a prompt of this kind says before the text, unless it is told
+    /// something more exact.
+    fn label(self) -> &'static str {
+        match self {
             PromptKind::Command => ":",
             PromptKind::Find => "Find: ",
             PromptKind::SaveStream => "Save stream to: ",
             PromptKind::AddColumn => "Field for the new column, then a title if you like: ",
             PromptKind::RenameColumn => "New title: ",
         }
+    }
+}
+
+impl Prompt {
+    pub fn label(&self) -> &str {
+        &self.label
     }
 }
 
@@ -227,11 +237,17 @@ struct Find {
     busy: Option<u64>,
     /// Steps asked for while one was in flight.
     queued: std::collections::VecDeque<Seek>,
-    filter: String,
-    /// The text as typed, kept while it might still be meant as plain text
-    /// rather than a filter expression.
-    plain: Option<String>,
+    query: search::Query,
+    plan: search::Plan,
     wrapped: bool,
+}
+
+/// Something to point out in a packet once its details have arrived: the
+/// place a search matched.
+struct Reveal {
+    frame: u32,
+    target: search::Target,
+    pattern: String,
 }
 
 /// What to open and how.
@@ -295,6 +311,7 @@ pub struct App {
     pub marks: BTreeSet<u32>,
     pub time_refs: BTreeSet<u32>,
     find: Option<Find>,
+    reveal: Option<Reveal>,
     /// Frame a pending "go to" asked for, to report if the filter hides it.
     goto_exact: Option<u32>,
     pub tail: Option<Tail>,
@@ -408,6 +425,7 @@ impl App {
             marks: BTreeSet::new(),
             time_refs: BTreeSet::new(),
             find: None,
+            reveal: None,
             goto_exact: None,
             tail: None,
             pending_open: None,
@@ -1084,29 +1102,68 @@ impl App {
 
     // ---- find -------------------------------------------------------------
 
+    /// What the find prompt would search with the choices as they stand.
+    pub fn find_options(&self) -> (search::Target, search::Kind, bool) {
+        let prefs = &self.state.find;
+        (
+            search::Target::parse(&prefs.target),
+            search::Kind::parse(&prefs.kind),
+            prefs.case_sensitive,
+        )
+    }
+
+    /// Change where, how or with what case the find prompt searches, and
+    /// remember it.
+    pub(super) fn set_find_options(
+        &mut self,
+        target: search::Target,
+        kind: search::Kind,
+        case: bool,
+    ) {
+        self.state.find = crate::config::FindPrefs {
+            target: target.name().to_string(),
+            kind: kind.key().to_string(),
+            case_sensitive: case,
+        };
+        self.save_state();
+        if let Some(prompt) = &mut self.prompt
+            && prompt.kind == PromptKind::Find
+        {
+            prompt.label = search::Query::describe(target, kind, case);
+        }
+    }
+
     fn start_find(&mut self, text: &str) {
         let text = text.trim();
         if text.is_empty() {
             return;
         }
-        // A leading quote forces a text search.
-        let find = match text.strip_prefix('"') {
-            Some(quoted) => Find {
-                busy: None,
-                queued: Default::default(),
-                filter: contains(quoted.strip_suffix('"').unwrap_or(quoted)),
-                plain: None,
-                wrapped: false,
-            },
-            None => Find {
-                busy: None,
-                queued: Default::default(),
-                filter: text.to_string(),
-                plain: Some(text.to_string()),
-                wrapped: false,
-            },
+        let (target, mut kind, case_sensitive) = self.find_options();
+        let mut text = text;
+        // A leading quote means "this is text", when it could be either.
+        if kind == search::Kind::Auto
+            && let Some(quoted) = text.strip_prefix('"')
+        {
+            text = quoted.strip_suffix('"').unwrap_or(quoted);
+            kind = search::Kind::Text;
+        }
+        let query = search::Query {
+            target,
+            kind,
+            case_sensitive,
+            text: text.to_string(),
         };
-        self.find = Some(find);
+        let plan = match query.plan() {
+            Ok(plan) => plan,
+            Err(e) => return self.error(e),
+        };
+        self.find = Some(Find {
+            busy: None,
+            queued: Default::default(),
+            query,
+            plan,
+            wrapped: false,
+        });
         self.find_step(Seek::Next);
     }
 
@@ -1128,19 +1185,90 @@ impl App {
     fn send_find(&mut self, from: u32, seek: Seek) {
         let Some(find) = &mut self.find else { return };
         find.busy = Some(self.list.generation);
-        let filter = if self.filter.applied.is_empty() {
-            find.filter.clone()
-        } else {
-            format!("({}) && ({})", self.filter.applied, find.filter)
-        };
-        let request = Request::Locate {
-            generation: self.list.generation,
-            filter,
-            frame: from,
-            seek,
-            purpose: Purpose::Find,
+        let generation = self.list.generation;
+        let request = match &find.plan {
+            search::Plan::Filter(filter) => Request::Locate {
+                generation,
+                filter: if self.filter.applied.is_empty() {
+                    filter.clone()
+                } else {
+                    format!("({}) && ({filter})", self.filter.applied)
+                },
+                frame: from,
+                seek,
+                purpose: Purpose::Find,
+            },
+            search::Plan::Details(pattern) => Request::SearchDetails {
+                generation,
+                filter: self.filter.applied.clone(),
+                from,
+                seek,
+                pattern: pattern.clone(),
+                summary: None,
+            },
+            search::Plan::Summary(pattern) => Request::SearchDetails {
+                generation,
+                filter: self.filter.applied.clone(),
+                from,
+                seek,
+                pattern: pattern.clone(),
+                summary: Some(self.columns.specs(self.time_format)),
+            },
         };
         self.send(request);
+    }
+
+    /// Whether a search is under way.
+    pub fn searching(&self) -> bool {
+        self.find
+            .as_ref()
+            .is_some_and(|f| f.busy == Some(self.list.generation))
+    }
+
+    /// Call off a search that is under way.
+    pub(super) fn stop_find(&mut self) {
+        if let Some(find) = &mut self.find {
+            find.busy = None;
+            find.queued.clear();
+        }
+        self.info("Search stopped.");
+    }
+
+    /// Point out where the search matched in the packet now shown.
+    pub(super) fn reveal_match(&mut self) {
+        let Some(reveal) = &self.reveal else { return };
+        let Some(detail) = &self.detail else { return };
+        if detail.num != reveal.frame {
+            return;
+        }
+        let Some(reveal) = self.reveal.take() else {
+            return;
+        };
+        let Ok(regex) = search::compile(&reveal.pattern) else {
+            return;
+        };
+        let Some(detail) = &self.detail else { return };
+        match reveal.target {
+            search::Target::Details => {
+                if let Some(path) = search::find_node(&detail.tree, &regex) {
+                    self.tree.reveal(&detail.tree, &path);
+                    self.sync_hex_to_tree();
+                }
+            }
+            search::Target::Bytes => {
+                // The frame's own bytes first, then reassembled or decrypted data.
+                let hit = detail.sources.iter().enumerate().find_map(|(i, source)| {
+                    regex.find(&source.bytes).map(|m| (i, m.start(), m.len()))
+                });
+                if let Some((source, start, len)) = hit {
+                    if let Some(path) = detail::deepest_at(&detail.tree, source, start) {
+                        self.tree.reveal(&detail.tree, &path);
+                    }
+                    self.hex.show_range(source, start, len.max(1));
+                }
+            }
+            search::Target::Summary => {}
+        }
     }
 
     // ---- detail panes -----------------------------------------------------
@@ -1963,10 +2091,6 @@ impl Drop for App {
     }
 }
 
-fn contains(text: &str) -> String {
-    format!("frame contains {}", filter_quote(text))
-}
-
 /// A hotkey for a menu entry: the first letter of its label that no earlier
 /// entry uses, else the first free digit.
 fn menu_key(label: &str, taken: &[char]) -> char {
@@ -1992,11 +2116,5 @@ mod tests {
             taken.push(key);
         }
         assert_eq!(taken, ['h', 't', 'c', 'l']);
-    }
-
-    #[test]
-    fn text_search_is_quoted_as_a_filter() {
-        assert_eq!(contains("hello"), r#"frame contains "hello""#);
-        assert_eq!(contains(r#"say "hi""#), r#"frame contains "say \"hi\"""#);
     }
 }

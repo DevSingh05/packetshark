@@ -3,8 +3,8 @@
 use std::time::Instant;
 
 use super::detail::Detail;
-use super::{App, Level, LoadState, Overlay, contains};
-use crate::sharkd::{Purpose, Reply, Seek};
+use super::{App, Level, LoadState, Overlay, Reveal, search};
+use crate::sharkd::{DetailsStep, Purpose, Reply, Seek};
 
 impl App {
     pub(super) fn on_reply(&mut self, reply: Reply) {
@@ -80,11 +80,23 @@ impl App {
                         self.hex.reset();
                         self.detail = Some(detail);
                         self.sync_hex_to_tree();
+                        self.reveal_match();
                     }
                     Err(e) => {
                         self.detail = None;
                         self.error(format!("Could not dissect packet {num}: {e}"));
                     }
+                }
+            }
+            Reply::DetailsSearched {
+                generation,
+                seek,
+                result,
+            } => {
+                if generation == self.list.generation {
+                    self.on_details_searched(seek, result);
+                } else {
+                    self.end_find();
                 }
             }
             Reply::Check { seq, result, .. } => {
@@ -264,50 +276,107 @@ impl App {
 
     fn on_found(&mut self, seek: Seek, result: Result<Option<(u32, u32)>, String>) {
         match result {
-            Ok(Some((_, num))) => {
-                let wrapped = self.find.as_ref().is_some_and(|f| f.wrapped);
-                self.goto_exact = None;
-                self.locate(num, Seek::Nearest, Purpose::Select);
-                if wrapped {
-                    self.info("Search wrapped around.");
-                }
-                // Continue with any step requested meanwhile, from this hit.
-                let next = self.find.as_mut().and_then(|f| {
-                    f.busy = None;
-                    f.wrapped = false;
-                    f.queued.pop_front()
-                });
-                if let Some(next) = next {
-                    self.send_find(num, next);
-                }
-            }
-            Ok(None) => {
-                let already_wrapped = self.find.as_ref().is_none_or(|f| f.wrapped);
-                if already_wrapped {
-                    self.end_find();
-                    self.info("No packet matches.");
-                } else {
-                    if let Some(f) = &mut self.find {
-                        f.wrapped = true;
-                    }
-                    // Start again from the other end.
-                    let from = if seek == Seek::Prev { u32::MAX } else { 0 };
-                    self.send_find(from, seek);
-                }
-            }
+            Ok(Some((_, num))) => self.found(num),
+            Ok(None) => self.find_ran_out(seek),
             Err(e) => {
-                // Not a valid filter expression: treat what was typed as text.
-                let plain = self.find.as_mut().and_then(|f| f.plain.take());
-                if let Some(text) = plain {
-                    if let Some(f) = &mut self.find {
-                        f.filter = contains(&text);
+                // Not a valid filter expression: if the text could be either,
+                // treat it as text.
+                let fallback = self
+                    .find
+                    .as_ref()
+                    .and_then(|f| (f.query.kind == search::Kind::Auto).then(|| f.query.as_text()));
+                match fallback.map(|query| (query.plan(), query)) {
+                    Some((Ok(plan), query)) => {
+                        if let Some(f) = &mut self.find {
+                            f.query = query;
+                            f.plan = plan;
+                        }
+                        let from = self.list.selected_num().unwrap_or(0);
+                        self.send_find(from, seek);
                     }
-                    let from = self.list.selected_num().unwrap_or(0);
-                    self.send_find(from, seek);
-                } else {
-                    self.end_find();
-                    self.error(format!("Search failed: {e}"));
+                    Some((Err(reason), _)) => {
+                        self.end_find();
+                        self.error(reason);
+                    }
+                    None => {
+                        self.end_find();
+                        self.error(format!("Search failed: {e}"));
+                    }
                 }
+            }
+        }
+    }
+
+    /// A search landed on packet `num`: go there, and point out the match.
+    fn found(&mut self, num: u32) {
+        let wrapped = self.find.as_ref().is_some_and(|f| f.wrapped);
+        self.reveal = self.find.as_ref().and_then(|f| {
+            let pattern = f.query.pattern().ok().flatten()?;
+            Some(Reveal {
+                frame: num,
+                target: f.query.target,
+                pattern,
+            })
+        });
+        self.goto_exact = None;
+        self.note_jump();
+        self.locate(num, Seek::Nearest, Purpose::Select);
+        // The packet may be the one already shown, which will not arrive again.
+        self.reveal_match();
+        if wrapped {
+            self.info("Search wrapped around.");
+        } else if self
+            .message
+            .as_ref()
+            .is_some_and(|m| m.text.starts_with("Searching"))
+        {
+            self.message = None;
+        }
+        // Continue with any step requested meanwhile, from this hit.
+        let next = self.find.as_mut().and_then(|f| {
+            f.busy = None;
+            f.wrapped = false;
+            f.queued.pop_front()
+        });
+        if let Some(next) = next {
+            self.send_find(num, next);
+        }
+    }
+
+    /// A search reached the end of the list without a match: try once more
+    /// from the other end, then give up.
+    fn find_ran_out(&mut self, seek: Seek) {
+        let already_wrapped = self.find.as_ref().is_none_or(|f| f.wrapped);
+        if already_wrapped {
+            self.end_find();
+            self.info("No packet matches.");
+        } else {
+            if let Some(f) = &mut self.find {
+                f.wrapped = true;
+            }
+            let from = if seek == Seek::Prev { u32::MAX } else { 0 };
+            self.send_find(from, seek);
+        }
+    }
+
+    fn on_details_searched(&mut self, seek: Seek, result: Result<DetailsStep, String>) {
+        // Called off while this step was running.
+        if !self.searching() {
+            return;
+        }
+        match result {
+            Ok(DetailsStep::Found(num)) => self.found(num),
+            Ok(DetailsStep::Continue { through }) => {
+                self.info(format!(
+                    "Searching… packet {} (Esc stops)",
+                    crate::util::thousands(u64::from(through))
+                ));
+                self.send_find(through, seek);
+            }
+            Ok(DetailsStep::End) => self.find_ran_out(seek),
+            Err(e) => {
+                self.end_find();
+                self.error(format!("Search failed: {e}"));
             }
         }
     }

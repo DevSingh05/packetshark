@@ -117,8 +117,15 @@ impl App {
             input.set_history(self.command_history.clone());
         }
         input.set(initial);
+        let label = if kind == PromptKind::Find {
+            let (target, how, case) = self.find_options();
+            super::search::Query::describe(target, how, case)
+        } else {
+            kind.label().to_string()
+        };
         self.prompt = Some(Prompt {
             kind,
+            label,
             input,
             candidates: super::cmdline::Candidates::default(),
         });
@@ -215,6 +222,23 @@ impl App {
             }
             KeyCode::Tab if prompt.kind == PromptKind::Command => self.complete_command(1),
             KeyCode::BackTab if prompt.kind == PromptKind::Command => self.complete_command(-1),
+            // In the find prompt these choose where to look, how to read
+            // the text, and whether case matters.
+            KeyCode::Tab if prompt.kind == PromptKind::Find => {
+                let (target, how, case) = self.find_options();
+                self.set_find_options(target.next(), how, case);
+            }
+            KeyCode::BackTab if prompt.kind == PromptKind::Find => {
+                let (target, how, case) = self.find_options();
+                self.set_find_options(target, how.next(), case);
+            }
+            KeyCode::Char('o')
+                if prompt.kind == PromptKind::Find
+                    && key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let (target, how, case) = self.find_options();
+                self.set_find_options(target, how, !case);
+            }
             KeyCode::Up => {
                 prompt.input.history_prev();
                 self.refresh_candidates(false);
@@ -502,7 +526,9 @@ impl App {
                 KeyCode::Char('N') => return self.find_step(Seek::Prev),
                 KeyCode::Char('z') => return self.zoom = !self.zoom,
                 KeyCode::Esc => {
-                    if self.zoom {
+                    if self.searching() {
+                        self.stop_find();
+                    } else if self.zoom {
                         self.zoom = false;
                     }
                     return;

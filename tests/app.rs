@@ -2446,3 +2446,202 @@ fn keys_can_be_mapped_to_sequences_and_are_remembered() {
     press(&mut h, KeyCode::F(5));
     h.assert_screen_contains("Conversations");
 }
+
+#[test]
+fn searching_bytes_details_and_the_summary() {
+    use packetshark::app::search::{Kind, Target};
+    use packetshark::config::Store;
+    let scratch = tempfile::tempdir().unwrap();
+    let store = Store::at(scratch.path().join("state.toml"));
+    let options = || Options {
+        store: store.clone(),
+        ..Default::default()
+    };
+    let Some(mut h) = Harness::open_with(&pcap::web(), 120, 34, options()) else {
+        return;
+    };
+    let at = |h: &Harness| h.app.list.selected_num().unwrap();
+    let find = |h: &mut Harness, text: &str| {
+        h.keys("gg");
+        h.keys(&format!("s{text}\n"));
+    };
+
+    // As it comes: a filter if the text is one, else text in the bytes,
+    // in any case.
+    assert_eq!(h.app.find_options(), (Target::Bytes, Kind::Auto, false));
+    h.keys("s");
+    h.assert_screen_contains("Find in bytes as filter or text, any case:");
+    h.assert_screen_contains("Tab: where to look");
+    h.key(KeyCode::Esc);
+    find(&mut h, "http.response");
+    assert_eq!(at(&h), 8, "read as a filter");
+    find(&mut h, "HELLO WORLD");
+    assert_eq!(at(&h), 8, "read as text, in any case");
+    // The match is pointed out: the cursor is on its first byte, and the
+    // field that holds it is selected.
+    let detail = h.app.detail.as_ref().unwrap();
+    let bytes = &detail.sources[h.app.hex.source].bytes;
+    assert!(
+        bytes[h.app.hex.cursor..].starts_with(b"hello world"),
+        "cursor at {}",
+        h.app.hex.cursor
+    );
+    // ... and the field that holds those bytes is selected, not the frame.
+    assert!(
+        !selected_label(&h).starts_with("Frame "),
+        "{}",
+        selected_label(&h)
+    );
+
+    // Exact case: Ctrl-o in the prompt.
+    h.keys("s");
+    h.ctrl('o');
+    h.assert_screen_contains("exact case:");
+    h.keys("HELLO WORLD\n");
+    assert!(h.message().contains("No packet matches"), "{}", h.message());
+    find(&mut h, "hello world");
+    assert_eq!(at(&h), 8);
+
+    // Shift-Tab changes how the text is read: text, regex, hex, filter.
+    h.keys("gg");
+    h.keys("s");
+    h.key(KeyCode::BackTab);
+    h.assert_screen_contains("Find in bytes as text, exact case:");
+    h.key(KeyCode::BackTab);
+    h.assert_screen_contains("Find in bytes as regex, exact case:");
+    h.keys("GET /[a-z]+\\.html\n");
+    assert_eq!(at(&h), 6);
+    find(&mut h, "GET /[0-9]+\\.html");
+    assert!(h.message().contains("No packet matches"), "{}", h.message());
+    find(&mut h, "GET /(");
+    assert!(
+        h.message().contains("Not a regular expression"),
+        "{}",
+        h.message()
+    );
+
+    h.keys("gg");
+    h.keys("s");
+    h.key(KeyCode::BackTab);
+    h.assert_screen_contains("Find in bytes as hex:");
+    // "GET " as bytes.
+    h.keys("47 45 54 20\n");
+    assert_eq!(at(&h), 6);
+    assert!(bytes_at_cursor(&h).starts_with(b"GET "));
+    find(&mut h, "4745zz");
+    assert!(h.message().contains("pairs of digits"), "{}", h.message());
+
+    // Tab changes where to look. The details: text that is in no packet's
+    // bytes, only in what Wireshark says about them.
+    h.keys("gg");
+    h.keys("s");
+    h.key(KeyCode::BackTab);
+    h.key(KeyCode::BackTab);
+    h.key(KeyCode::BackTab);
+    h.assert_screen_contains("as text");
+    h.key(KeyCode::Tab);
+    h.ctrl('o');
+    h.assert_screen_contains("Find in details as text, any case:");
+    h.keys("status code description\n");
+    assert_eq!(at(&h), 8);
+    assert!(
+        selected_label(&h)
+            .to_lowercase()
+            .contains("status code description"),
+        "the matching line is selected: {}",
+        selected_label(&h)
+    );
+    // n and N go on from there, and wrap.
+    h.keys("n");
+    assert_eq!(at(&h), 18, "the second response has one too");
+    h.keys("n");
+    assert_eq!(
+        at(&h),
+        8,
+        "and after the last, the search wraps to the first"
+    );
+    assert!(h.message().contains("wrapped"), "{}", h.message());
+
+    // The summary column, where the Wireshark in use can filter on it.
+    h.keys("gg");
+    h.keys("s");
+    h.key(KeyCode::Tab);
+    h.assert_screen_contains("Find in summary as text, any case:");
+    h.keys("syn, ack\n");
+    assert_eq!(at(&h), 4);
+    drop(h);
+
+    // The choices are remembered.
+    let Some(h) = Harness::open_with(&pcap::web(), 120, 34, options()) else {
+        return;
+    };
+    assert_eq!(h.app.find_options(), (Target::Summary, Kind::Text, false));
+}
+
+fn bytes_at_cursor(h: &Harness) -> Vec<u8> {
+    let detail = h.app.detail.as_ref().unwrap();
+    detail.sources[h.app.hex.source].bytes[h.app.hex.cursor..].to_vec()
+}
+
+#[test]
+fn a_details_search_reads_on_through_a_long_capture_and_can_be_stopped() {
+    use packetshark::config::{FindPrefs, State, Store};
+    let scratch = tempfile::tempdir().unwrap();
+    let store = Store::at(scratch.path().join("state.toml"));
+    store.save(&State {
+        find: FindPrefs {
+            target: "details".into(),
+            kind: "string".into(),
+            case_sensitive: true,
+        },
+        ..State::default()
+    });
+    let options = Options {
+        store,
+        ..Default::default()
+    };
+    // The port is unique to one packet, far beyond one step of the search.
+    let Some(mut h) = Harness::open_with(&pcap::many(700), 100, 30, options) else {
+        return;
+    };
+    h.keys("sSource Port: 30650\n");
+    assert_eq!(h.app.list.selected_num(), Some(651));
+    assert!(selected_label(&h).contains("Source Port: 30650"));
+    // Backwards from there, to the same packet by the long way round.
+    h.keys("N");
+    assert_eq!(h.app.list.selected_num(), Some(651));
+    assert!(h.message().contains("wrapped"), "{}", h.message());
+    // Under a filter only the displayed packets are read.
+    h.keys("/udp.srcport < 30100\n");
+    h.keys("sSource Port: 30650\n");
+    assert!(h.message().contains("No packet matches"), "{}", h.message());
+    h.keys("sSource Port: 30050\n");
+    assert_eq!(h.app.list.selected_num(), Some(51));
+
+    // Esc calls a running search off.
+    h.keys("x");
+    h.keys("gg");
+    h.app.handle(Event::Key(crossterm::event::KeyEvent::new(
+        KeyCode::Char('s'),
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    for c in "nothing like this anywhere".chars() {
+        h.app.handle(Event::Key(crossterm::event::KeyEvent::new(
+            KeyCode::Char(c),
+            crossterm::event::KeyModifiers::NONE,
+        )));
+    }
+    h.app.handle(Event::Key(crossterm::event::KeyEvent::new(
+        KeyCode::Enter,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    assert!(h.app.searching());
+    h.app.handle(Event::Key(crossterm::event::KeyEvent::new(
+        KeyCode::Esc,
+        crossterm::event::KeyModifiers::NONE,
+    )));
+    assert!(!h.app.searching());
+    h.settle();
+    assert!(h.message().contains("Search stopped"), "{}", h.message());
+    assert_eq!(h.app.list.selected_num(), Some(1), "nothing moved");
+}

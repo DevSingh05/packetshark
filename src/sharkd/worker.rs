@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
@@ -32,6 +33,17 @@ pub enum Seek {
     Next,
     /// The last displayed frame strictly before the given frame.
     Prev,
+}
+
+/// How far one step of a search through packet details got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailsStep {
+    /// This packet's details hold the pattern.
+    Found(u32),
+    /// Nothing up to and including this packet; there may be more to read.
+    Continue { through: u32 },
+    /// There are no more packets that way.
+    End,
 }
 
 /// Why a `Locate` was asked, so the app knows what to do with the answer.
@@ -73,6 +85,18 @@ pub enum Request {
         num: u32,
         prev: Option<u32>,
         reference: Option<u32>,
+    },
+    /// Read the details of the displayed packets after (or before) `from`,
+    /// a few at a time, looking for `pattern` in their text.
+    SearchDetails {
+        generation: u64,
+        filter: String,
+        from: u32,
+        seek: Seek,
+        pattern: String,
+        /// Search the packet list's rows, fetched with these columns,
+        /// instead of the details.
+        summary: Option<Vec<String>>,
     },
     /// Validate a display filter.
     Check { seq: u64, filter: String },
@@ -121,6 +145,11 @@ pub enum Reply {
     Frame {
         num: u32,
         result: Result<Box<FrameDetail>, String>,
+    },
+    DetailsSearched {
+        generation: u64,
+        seek: Seek,
+        result: Result<DetailsStep, String>,
     },
     Check {
         seq: u64,
@@ -436,6 +465,24 @@ impl Runner {
                     }),
                 }
             }
+            Request::SearchDetails {
+                generation,
+                filter,
+                from,
+                seek,
+                pattern,
+                summary,
+            } => {
+                let result = soft(match summary {
+                    Some(columns) => self.search_rows(&filter, from, seek, &pattern, &columns),
+                    None => self.search_details(&filter, from, seek, &pattern),
+                })?;
+                Reply::DetailsSearched {
+                    generation,
+                    seek,
+                    result,
+                }
+            }
             Request::Check { seq, filter } => {
                 let result = if filter.trim().is_empty() {
                     Ok(())
@@ -572,6 +619,123 @@ impl Runner {
         Ok(rows.first().map(|r| r.num))
     }
 
+    /// The numbers of up to `limit` displayed frames, starting at `index` of
+    /// the displayed list.
+    fn frame_numbers(&mut self, filter: &str, index: u32, limit: u32) -> Result<Vec<u32>, Error> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        if filter.is_empty() {
+            let total = self.count(filter)?;
+            return Ok((index + 1..=total.min(index.saturating_add(limit))).collect());
+        }
+        let mut params = json!({
+            "limit": limit,
+            "column0": "frame.number:1",
+            "filter": cache_key(filter, self.loads),
+        });
+        if index > 0 {
+            params["skip"] = index.into();
+        }
+        let rows: Vec<FrameRow> = self.client.call("frames", params)?;
+        Ok(rows.iter().map(|r| r.num).collect())
+    }
+
+    /// One step of a search through packet details: read some packets'
+    /// details and look for `pattern` in their text. It stops after a
+    /// handful of packets or a fraction of a second, whichever comes first,
+    /// so that the user can keep working, or call the search off.
+    fn search_details(
+        &mut self,
+        filter: &str,
+        from: u32,
+        seek: Seek,
+        pattern: &str,
+    ) -> Result<DetailsStep, Error> {
+        const CHUNK: u32 = 64;
+        const BUDGET: Duration = Duration::from_millis(150);
+        let regex = crate::app::search::compile(pattern).map_err(Error::Protocol)?;
+        let Some((index, _)) = self.locate(filter, from, seek)? else {
+            return Ok(DetailsStep::End);
+        };
+        let numbers = if seek == Seek::Prev {
+            let first = index.saturating_sub(CHUNK - 1);
+            let mut numbers = self.frame_numbers(filter, first, index - first + 1)?;
+            numbers.reverse();
+            numbers
+        } else {
+            self.frame_numbers(filter, index, CHUNK)?
+        };
+        let started = Instant::now();
+        let mut through = None;
+        for num in numbers {
+            let detail: FrameDetail = self
+                .client
+                .call("frame", json!({ "frame": num, "proto": true }))?;
+            if crate::app::search::find_node(&detail.tree, &regex).is_some() {
+                return Ok(DetailsStep::Found(num));
+            }
+            through = Some(num);
+            if started.elapsed() > BUDGET {
+                break;
+            }
+        }
+        Ok(match through {
+            Some(through) => DetailsStep::Continue { through },
+            None => DetailsStep::End,
+        })
+    }
+
+    /// One step of a search through the packet list's rows, as the columns
+    /// show them. A row costs far less than a packet's details, so a step
+    /// covers many more packets.
+    fn search_rows(
+        &mut self,
+        filter: &str,
+        from: u32,
+        seek: Seek,
+        pattern: &str,
+        columns: &[String],
+    ) -> Result<DetailsStep, Error> {
+        const CHUNK: u32 = 2000;
+        let regex = crate::app::search::compile(pattern).map_err(Error::Protocol)?;
+        let Some((index, _)) = self.locate(filter, from, seek)? else {
+            return Ok(DetailsStep::End);
+        };
+        let (first, count) = if seek == Seek::Prev {
+            let first = index.saturating_sub(CHUNK - 1);
+            (first, index - first + 1)
+        } else {
+            (index, CHUNK)
+        };
+        let mut params = Map::new();
+        if !filter.is_empty() {
+            params.insert("filter".into(), cache_key(filter, self.loads).into());
+        }
+        if first > 0 {
+            params.insert("skip".into(), first.into());
+        }
+        params.insert("limit".into(), count.into());
+        for (i, column) in columns.iter().enumerate() {
+            params.insert(format!("column{i}"), column.as_str().into());
+        }
+        let mut rows: Vec<FrameRow> = self.client.call("frames", Value::Object(params))?;
+        if seek == Seek::Prev {
+            rows.reverse();
+        }
+        let mut through = None;
+        for row in rows {
+            if row.cols.iter().any(|cell| regex.is_match(cell.as_bytes())) {
+                return Ok(DetailsStep::Found(row.num));
+            }
+            through = Some(row.num);
+        }
+        Ok(match through {
+            Some(through) => DetailsStep::Continue { through },
+            None => DetailsStep::End,
+        })
+    }
+
     /// Binary search the displayed list for `frame`. Displayed frames are in
     /// ascending frame-number order, so about 20 cheap requests cover a
     /// million packets.
@@ -671,6 +835,13 @@ fn failure(request: Request, reason: String) -> Reply {
             num,
             result: Err(reason),
         },
+        Request::SearchDetails {
+            generation, seek, ..
+        } => Reply::DetailsSearched {
+            generation,
+            seek,
+            result: Err(reason),
+        },
         Request::Check { seq, filter } => Reply::Check {
             seq,
             filter,
@@ -730,7 +901,8 @@ fn mark_superseded(queue: &VecDeque<Request>) -> Vec<bool> {
             // List requests for an outdated filter or file.
             Request::Count { generation, .. }
             | Request::Frames { generation, .. }
-            | Request::Locate { generation, .. } => Some(*generation) < newest_generation,
+            | Request::Locate { generation, .. }
+            | Request::SearchDetails { generation, .. } => Some(*generation) < newest_generation,
             _ => false,
         })
         .collect()
@@ -740,7 +912,8 @@ fn generation_of(r: &Request) -> Option<u64> {
     match r {
         Request::Count { generation, .. }
         | Request::Frames { generation, .. }
-        | Request::Locate { generation, .. } => Some(*generation),
+        | Request::Locate { generation, .. }
+        | Request::SearchDetails { generation, .. } => Some(*generation),
         _ => None,
     }
 }

@@ -137,6 +137,34 @@ pub fn completions(app: &App, buf: &mut Buffer, body: Rect) {
 /// Completions for the command line, stacked upwards from the prompt.
 pub fn command_candidates(app: &App, buf: &mut Buffer, body: Rect) {
     let Some(prompt) = &app.prompt else { return };
+    if prompt.kind == crate::app::PromptKind::Find && body.height > 0 {
+        // The find prompt's choices are made with keys, which this names.
+        let hint = " Tab: where to look   Shift-Tab: text, regex, hex or filter   Ctrl-o: case ";
+        let y = body.y + body.height - 1;
+        let w = (width(hint) as u16).min(body.width);
+        fill(
+            buf,
+            Rect {
+                x: body.x,
+                y,
+                width: w,
+                height: 1,
+            },
+            app.theme.popup,
+        );
+        put(
+            buf,
+            body.x,
+            y,
+            w,
+            hint,
+            app.theme
+                .popup
+                .patch(app.theme.dim)
+                .bg(app.theme.popup.bg.unwrap_or_default()),
+        );
+        return;
+    }
     let candidates = &prompt.candidates;
     let rows = (candidates.items.len() as u16).min(10).min(body.height);
     if rows == 0 {

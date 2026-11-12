@@ -28,7 +28,9 @@ rule and preference Wireshark has works here, with the same results.
   text, hex dump or raw bytes; save the payload or filter down to the stream.
 - **Statistics**: conversations, endpoints, protocol hierarchy, expert
   information, per-protocol trees, and exporting objects (HTTP, SMB, TFTP, ...).
-- **Find** by filter expression or plain text; **go to** a packet; vim-style
+- **Find** in packet bytes, in the details or in the summary, as text, a
+  regular expression, hex or a filter expression, with the match pointed
+  out where it lands; **go to** a packet; vim-style
   **marks** (`ma`, `'a`, `''`), including ones that remember their capture
   file; **time references**.
 - **A command line that completes** commands, their arguments and file
@@ -153,8 +155,9 @@ and a hint:
 | `/`                  | Edit the display filter                         |
 | `x`                  | Clear the display filter                        |
 | `:`                  | Command line (try :help)                        |
-| `s`                  | Find a packet (filter expression or plain text) |
+| `s`                  | Find a packet: in its bytes, details or summary |
 | `n / N`              | Next / previous match                           |
+| `Esc`                | Stop a search that is still running             |
 | `z`                  | Zoom the current pane                           |
 | `L`                  | Switch layout (stacked / side by side)          |
 | `+ / -`              | Grow / shrink the current pane                  |
