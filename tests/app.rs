@@ -2729,3 +2729,71 @@ fn a_followed_stream_can_be_searched() {
         _ => panic!("no stream:\n{}", h.screen()),
     }
 }
+
+#[test]
+fn a_conversation_can_be_filtered_by_direction_or_combined() {
+    let Some(mut h) = Harness::open(&pcap::web()) else {
+        return;
+    };
+    let total = |h: &mut Harness| h.line(1);
+    h.keys(":conv tcp\n");
+    h.assert_screen_contains("Conversations");
+    // The whole conversation, then each direction of it.
+    h.keys("a");
+    h.assert_screen_contains("Both directions");
+    h.assert_screen_contains("A → B only");
+    h.keys("s");
+    let both = h.app.filter.applied.clone();
+    assert!(both.contains("tcp.port"), "{both}");
+    let whole: u32 = h.app.list.total.unwrap();
+
+    h.keys("x:conv tcp\n");
+    h.keys("a>");
+    assert!(
+        h.app.filter.applied.contains("ip.src == 10.0.0.2"),
+        "{}",
+        h.app.filter.applied
+    );
+    let there: u32 = h.app.list.total.unwrap();
+    h.keys("x:conv tcp\n");
+    h.keys("a<");
+    assert!(
+        h.app.filter.applied.contains("ip.dst == 10.0.0.2"),
+        "{}",
+        h.app.filter.applied
+    );
+    let back: u32 = h.app.list.total.unwrap();
+    assert!(there > 0 && back > 0, "{}", total(&mut h));
+    assert_eq!(
+        there + back,
+        whole,
+        "the two directions make up the conversation"
+    );
+
+    // Combined with the filter already applied.
+    h.keys("/http\n");
+    let http: u32 = h.app.list.total.unwrap();
+    h.keys(":conv tcp\n");
+    h.keys("f"); // count all packets again, not only those the filter shows
+    h.keys("ax");
+    assert!(
+        h.app.filter.applied.starts_with("(http) && !("),
+        "{}",
+        h.app.filter.applied
+    );
+    assert!(h.app.list.total.unwrap() < http);
+
+    // Prepare leaves the filter in the bar to be edited, not applied.
+    h.keys("x:endpoints ipv4\n");
+    h.keys("p");
+    h.assert_screen_contains("Prepare a filter");
+    h.assert_screen_contains("From it");
+    h.keys(">");
+    assert_eq!(h.app.focus, Focus::Filter);
+    assert!(
+        h.app.filter.input.text().starts_with("ip.src == "),
+        "{}",
+        h.app.filter.input.text()
+    );
+    assert_eq!(h.app.filter.applied, "");
+}

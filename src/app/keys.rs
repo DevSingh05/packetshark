@@ -922,10 +922,85 @@ impl App {
                         self.request_stats();
                     }
                     KeyCode::Enter => self.activate_stats_row(),
+                    KeyCode::Char('a') => self.stats_filter_menu(false),
+                    KeyCode::Char('p') => self.stats_filter_menu(true),
                     _ => {}
                 }
             }
         }
+    }
+
+    /// The ways of filtering on the selected row of a statistics table: the
+    /// whole conversation or one direction of it, on its own or combined
+    /// with the filter already applied.
+    fn stats_filter_menu(&mut self, prepare: bool) {
+        let Some(Overlay::Stats(view)) = &self.overlay else {
+            return;
+        };
+        let Some(row) = view.selected_row() else {
+            return;
+        };
+        let Some(filter) = row.filter.clone() else {
+            return self.info("This row cannot be used as a filter.");
+        };
+        let endpoint = view.kind == super::stats::Kind::Endpoints;
+        let one_way = row.one_way.clone();
+        let current = self.filter.applied.clone();
+        let make = |expr: String| {
+            if prepare {
+                super::Action::PrepareFilter(expr)
+            } else {
+                super::Action::ApplyFilter(expr)
+            }
+        };
+        let item = |key, label: String, expr: String| super::MenuItem {
+            key,
+            label: format!("{label:<22} {}", crate::util::truncate(&expr, 70)),
+            action: make(expr),
+        };
+        let both = if endpoint {
+            "To or from it"
+        } else {
+            "Both directions"
+        };
+        let mut items = vec![item('s', both.to_string(), filter.clone())];
+        if let Some((there, back)) = one_way {
+            let (a, b) = if endpoint {
+                ("From it", "To it")
+            } else {
+                ("A → B only", "B → A only")
+            };
+            items.push(item('>', a.to_string(), there));
+            items.push(item('<', b.to_string(), back));
+        }
+        items.push(item(
+            'n',
+            "Everything else".to_string(),
+            format!("!({filter})"),
+        ));
+        if !current.is_empty() {
+            items.push(item(
+                'a',
+                "… and this".to_string(),
+                format!("({current}) && ({filter})"),
+            ));
+            items.push(item(
+                'o',
+                "… or this".to_string(),
+                format!("({current}) || ({filter})"),
+            ));
+            items.push(item(
+                'x',
+                "… and not this".to_string(),
+                format!("({current}) && !({filter})"),
+            ));
+        }
+        let title = if prepare {
+            "Prepare a filter"
+        } else {
+            "Apply as filter"
+        };
+        self.open_menu(title, items);
     }
 
     fn activate_stats_row(&mut self) {

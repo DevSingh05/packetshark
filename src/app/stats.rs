@@ -38,7 +38,8 @@ impl Kind {
     /// What Enter does on a row, for the footer hint.
     pub fn enter_hint(self) -> &'static str {
         match self {
-            Kind::Conversations | Kind::Endpoints | Kind::Hierarchy => "filter",
+            Kind::Conversations | Kind::Endpoints => "filter · a p filter one way, or combine",
+            Kind::Hierarchy => "filter · a p combine with the filter",
             Kind::Expert => "show packets",
             Kind::Objects => "save",
             Kind::Tree => "",
@@ -124,6 +125,9 @@ pub struct Row {
     pub keys: Vec<Key>,
     /// Display filter that selects what this row describes.
     pub filter: Option<String>,
+    /// For a conversation or an endpoint, filters for one direction only:
+    /// A to B and B to A, or from the endpoint and to it.
+    pub one_way: Option<(String, String)>,
     /// Packet this row points at.
     pub frame: Option<u32>,
     /// Token for downloading an exported object.
@@ -257,7 +261,7 @@ impl StatsView {
 
     fn fill(&mut self, tap: Tap) {
         match tap {
-            Tap::Conversations { convs, .. } => {
+            Tap::Conversations { convs, proto } => {
                 self.truncated_from = convs.truncated_from();
                 let convs = convs.items;
                 let ports = convs.iter().any(|c| c.sport.is_some());
@@ -324,15 +328,21 @@ impl StatsView {
                         Key::Num(c.start),
                         Key::Num(duration),
                     ]);
+                    let one_way = one_way_filters(
+                        &proto,
+                        (&c.saddr, c.sport.as_deref()),
+                        Some((&c.daddr, c.dport.as_deref())),
+                    );
                     self.rows.push(Row {
                         cells,
                         keys,
                         filter: c.filter,
+                        one_way,
                         ..Default::default()
                     });
                 }
             }
-            Tap::Endpoints { hosts, .. } => {
+            Tap::Endpoints { hosts, proto } => {
                 self.truncated_from = hosts.truncated_from();
                 let hosts = hosts.items;
                 let ports = hosts.iter().any(|h| h.port.is_some());
@@ -368,10 +378,12 @@ impl StatsView {
                     keys.extend(
                         [frames, bytes, h.txf, h.txb, h.rxf, h.rxb].map(|v| Key::Num(v as f64)),
                     );
+                    let one_way = one_way_filters(&proto, (&h.host, h.port.as_deref()), None);
                     self.rows.push(Row {
                         cells,
                         keys,
                         filter: h.filter,
+                        one_way,
                         ..Default::default()
                     });
                 }
@@ -639,10 +651,93 @@ impl StatsView {
     }
 }
 
+/// Display filters for one direction of a conversation (`a` to `b` and
+/// back), or for traffic from and to a single endpoint when `b` is `None`.
+/// `None` for protocols whose address fields are not known here.
+fn one_way_filters(
+    proto: &str,
+    a: (&str, Option<&str>),
+    b: Option<(&str, Option<&str>)>,
+) -> Option<(String, String)> {
+    let v6 = |address: &str| address.contains(':');
+    // The address field, and the port field if the protocol has ports.
+    let (address, port): (&str, Option<&str>) = match proto.to_ascii_lowercase().as_str() {
+        "ethernet" | "eth" => ("eth", None),
+        "ipv4" | "ip" => ("ip", None),
+        "ipv6" => ("ipv6", None),
+        "tcp" => (if v6(a.0) { "ipv6" } else { "ip" }, Some("tcp")),
+        "udp" => (if v6(a.0) { "ipv6" } else { "ip" }, Some("udp")),
+        _ => return None,
+    };
+    let end = |way: &str, (addr, p): (&str, Option<&str>)| {
+        let mut term = format!("{address}.{way} == {addr}");
+        if let (Some(port), Some(p)) = (port, p.filter(|p| !p.is_empty())) {
+            term = format!("{term} && {port}.{way}port == {p}");
+        }
+        term
+    };
+    Some(match b {
+        Some(b) => (
+            format!("{} && {}", end("src", a), end("dst", b)),
+            format!("{} && {}", end("src", b), end("dst", a)),
+        ),
+        None => (end("src", a), end("dst", a)),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sharkd::types::{Conversation, ExpertItem};
+
+    #[test]
+    fn a_conversation_can_be_filtered_one_way() {
+        let (there, back) = one_way_filters(
+            "TCP",
+            ("10.0.0.2", Some("40000")),
+            Some(("1.1.1.1", Some("80"))),
+        )
+        .unwrap();
+        assert_eq!(
+            there,
+            "ip.src == 10.0.0.2 && tcp.srcport == 40000 && ip.dst == 1.1.1.1 && tcp.dstport == 80"
+        );
+        assert_eq!(
+            back,
+            "ip.src == 1.1.1.1 && tcp.srcport == 80 && ip.dst == 10.0.0.2 && tcp.dstport == 40000"
+        );
+        let (there, _) = one_way_filters(
+            "UDP",
+            ("fe80::1", Some("53")),
+            Some(("fe80::2", Some("5353"))),
+        )
+        .unwrap();
+        assert!(
+            there.starts_with("ipv6.src == fe80::1 && udp.srcport == 53"),
+            "{there}"
+        );
+        let (there, back) = one_way_filters(
+            "Ethernet",
+            ("aa:bb:cc:dd:ee:01", None),
+            Some(("aa:bb:cc:dd:ee:02", None)),
+        )
+        .unwrap();
+        assert_eq!(
+            there,
+            "eth.src == aa:bb:cc:dd:ee:01 && eth.dst == aa:bb:cc:dd:ee:02"
+        );
+        assert_eq!(
+            back,
+            "eth.src == aa:bb:cc:dd:ee:02 && eth.dst == aa:bb:cc:dd:ee:01"
+        );
+        // An endpoint: traffic from it, and to it.
+        let (from, to) = one_way_filters("IPv4", ("10.0.0.2", None), None).unwrap();
+        assert_eq!(
+            (from.as_str(), to.as_str()),
+            ("ip.src == 10.0.0.2", "ip.dst == 10.0.0.2")
+        );
+        assert!(one_way_filters("SCTP", ("10.0.0.2", None), None).is_none());
+    }
 
     fn conv(a: &str, b: &str, bytes: u64) -> Conversation {
         Conversation {

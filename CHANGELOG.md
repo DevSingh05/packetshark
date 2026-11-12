@@ -25,6 +25,8 @@ Notable changes to packetshark. The format follows
 - `/` in Follow Stream searches the stream, as text or `/regex/`; `n` and
   `N` step through the matches. The title shows how many packets carried
   the stream and how often it changed sides.
+- In the conversation and endpoint tables, `a` and `p` filter on one
+  direction only, or combine the row with the filter in use.
 - Key mappings: `:map <f5> :conv<enter>` makes a key type a sequence of
   keys, written as in vim, and is remembered.
 - `25G` and `25gg` go to a row; `Ctrl-w w` and `Ctrl-w =` switch pane and

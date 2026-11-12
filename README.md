@@ -240,12 +240,13 @@ and a hint:
 
 **Statistics**
 
-| Key               | Action                                                  |
-| ----------------- | ------------------------------------------------------- |
-| `Enter`           | Filter to the row, go to its packet, or save the object |
-| `Tab / Shift-Tab` | Next / previous protocol                                |
-| `o / r`           | Sort by the next column / reverse the order             |
-| `f`               | Count only packets matching the display filter          |
+| Key               | Action                                                      |
+| ----------------- | ----------------------------------------------------------- |
+| `Enter`           | Filter to the row, go to its packet, or save the object     |
+| `Tab / Shift-Tab` | Next / previous protocol                                    |
+| `o / r`           | Sort by the next column / reverse the order                 |
+| `f`               | Count only packets matching the display filter              |
+| `a / p`           | Apply / prepare a filter from the row: one way, or combined |
 
 **Column editor**
 
