@@ -116,6 +116,7 @@ const PHRASES: &[&str] = &[
     ":open /tm\t",
     ":unmark\n",
     ":reload\n",
+    ":restart\n",
     ":layout side\n",
     ":layout stacked\n",
     ":colors tint\n",

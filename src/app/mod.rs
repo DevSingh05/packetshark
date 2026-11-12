@@ -596,6 +596,18 @@ impl App {
         self.capture = Some(capture);
     }
 
+    /// Forget what has been read of a growing capture file, so that it is
+    /// read from its beginning when it next has something in it.
+    pub(super) fn restart_tail(&mut self) {
+        self.tail = Some(Tail {
+            size: 0,
+            loading: false,
+            started: Instant::now(),
+            cost: Duration::ZERO,
+            error: None,
+        });
+    }
+
     fn send(&mut self, request: Request) {
         self.inflight += 1;
         self.worker.send(request);

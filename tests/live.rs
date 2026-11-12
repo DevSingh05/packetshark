@@ -201,3 +201,68 @@ exit 2
     h.key(KeyCode::Char('g'));
     h.assert_screen_contains("Standard query 0x1234 A example.com");
 }
+
+#[test]
+fn a_live_capture_can_be_started_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = dir.path().join("first.pcap");
+    let second = dir.path().join("second.pcap");
+    pcap::many(30).write(&first);
+    pcap::many(8).write(&second);
+    let runs = dir.path().join("runs");
+    // The first run captures thirty packets, any later one eight, and each
+    // then idles like a quiet interface until interrupted.
+    let dumpcap = script(
+        dir.path(),
+        &format!(
+            r#"while [ $# -gt 0 ]; do
+  if [ "$1" = "-w" ]; then out="$2"; fi
+  shift
+done
+trap 'exit 0' INT TERM
+if [ -f '{runs}' ]; then cat '{second}' > "$out"; else cat '{first}' > "$out"; fi
+echo run >> '{runs}'
+while :; do sleep 0.05; done
+"#,
+            runs = runs.display(),
+            first = first.display(),
+            second = second.display()
+        ),
+    );
+    let Some(mut h) = start(&dumpcap, dir) else {
+        return;
+    };
+    wait_for(&mut h, "the first capture", |h| h.app.frames() == 30);
+    h.keys("gjjj");
+    h.keys("M");
+    h.keys("/udp\n");
+    assert_eq!(h.app.list.total, Some(30));
+
+    h.keys(":restart\n");
+    assert!(h.message().contains("started again"), "{}", h.message());
+    assert!(h.app.capturing());
+    wait_for(&mut h, "the second capture", |h| h.app.frames() == 8);
+    assert_eq!(
+        h.app.list.total,
+        Some(8),
+        "the filter still applies, to the new packets"
+    );
+    assert!(h.app.marks.is_empty(), "marks went with the old packets");
+    assert_eq!(
+        std::fs::read_to_string(h.dir.path().join("runs"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    h.keys("gj");
+    assert_eq!(h.app.list.selected_num(), Some(2));
+    h.assert_screen_contains("Frame 2:");
+
+    // After stopping, it can still be started again.
+    h.ctrl('c');
+    assert!(!h.app.capturing());
+    h.keys(":restart\n");
+    assert!(h.app.capturing());
+    wait_for(&mut h, "the third capture", |h| h.app.frames() == 8);
+}

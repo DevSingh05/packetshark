@@ -63,6 +63,11 @@ pub const COMMANDS: &[Command] = &[
     cmd("quit", "", "Quit"),
     cmd("recent", "", "Open a capture opened lately"),
     cmd("reload", "", "Reload the capture"),
+    cmd(
+        "restart",
+        "",
+        "Start a live capture again, dropping its packets",
+    ),
     cmd("set", "<pref> <value>", "Set a Wireshark preference"),
     cmd("stat", "<name>", "A statistics tree"),
     cmd("stop", "", "Stop a live capture"),

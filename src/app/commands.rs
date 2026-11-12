@@ -191,6 +191,7 @@ impl App {
                 self.reload();
             }
             "stop" => self.stop_capture(),
+            "restart" | "clear-packets" => self.restart_capture(),
             other => self.error(format!("Unknown command: {other}. Press ? for the list.")),
         }
     }

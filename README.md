@@ -124,7 +124,8 @@ packetshark -Y dns capture.pcapng | less      # no terminal: print like tshark
 A capture read from stdin leaves the terminal alone until packets arrive, so
 `sudo tcpdump -U -w - | packetshark -` can ask for its password first. The
 packets of a live or piped capture are kept only if you give `-w FILE`;
-otherwise `:write FILE` saves them before you quit. Ctrl-z suspends
+otherwise `:write FILE` saves them before you quit. `:restart` drops what
+has been captured and starts the capture again. Ctrl-z suspends
 packetshark as it does any program, and `fg` brings it back.
 
 Press `?` inside packetshark for the keys. `packetshark --help` lists the options.
@@ -328,6 +329,7 @@ and a hint:
 | `:info`                           | The capture file's properties: format, size, time span            |
 | `:reload`                         | Reload the capture                                                |
 | `:stop`                           | Stop a live capture                                               |
+| `:restart`                        | Start a live capture again, dropping its packets                  |
 | `:quit`                           | Quit                                                              |
 
 Typing after `/` replaces the current filter; press an arrow key first to

@@ -14,6 +14,7 @@ Notable changes to packetshark. The format follows
 - `:profile` switches Wireshark configuration profile while running.
 - `:decode tcp.port 8080 http`, or `-d` at startup, adds a Decode As rule.
   Your Wireshark configuration is not written to.
+- `:restart` starts a live capture again, dropping the packets so far.
 - `v` in the bytes pane selects a range of bytes, and `y` copies it as hex,
   text, an escaped string, a C array, base64 or a hex dump.
 

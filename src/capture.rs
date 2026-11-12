@@ -103,10 +103,35 @@ pub fn pick_interface(answer: &str, interfaces: &[Interface]) -> Result<Option<S
     }
 }
 
+/// How dumpcap was started, to start it the same way again.
+struct Dumpcap {
+    program: PathBuf,
+    args: Vec<String>,
+}
+
+impl Dumpcap {
+    fn spawn(&self, log: &Path) -> Result<Child, String> {
+        let log_file = File::create(log).map_err(|e| format!("could not create log: {e}"))?;
+        let mut cmd = Command::new(&self.program);
+        cmd.args(&self.args);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(log_file);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        cmd.spawn()
+            .map_err(|e| format!("could not start {}: {e}", self.program.display()))
+    }
+}
+
 enum Producer {
     Dumpcap {
         child: Child,
         log: PathBuf,
+        how: Dumpcap,
     },
     Stdin {
         done: Arc<AtomicBool>,
@@ -143,22 +168,13 @@ impl Capture {
             None => dir.path().join("capture.pcapng"),
         };
         let log = dir.path().join("dumpcap.log");
-        let log_file = File::create(&log).map_err(|e| format!("could not create log: {e}"))?;
-        let mut cmd = Command::new(dumpcap);
-        cmd.args(dumpcap_args(interfaces, capture_filter, &path));
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(log_file);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
-        let child = cmd
-            .spawn()
-            .map_err(|e| format!("could not start {}: {e}", dumpcap.display()))?;
+        let how = Dumpcap {
+            program: dumpcap.to_path_buf(),
+            args: dumpcap_args(interfaces, capture_filter, &path),
+        };
+        let child = how.spawn(&log)?;
         Ok(Capture {
-            producer: Producer::Dumpcap { child, log },
+            producer: Producer::Dumpcap { child, log, how },
             path,
             stopped: false,
             kept: keep_in.is_some(),
@@ -216,6 +232,24 @@ impl Capture {
         })
     }
 
+    /// Throw away what has been captured and begin again, with the same
+    /// interfaces and filter. Only a capture of our own making can do this;
+    /// one piped in from another program cannot be asked to start over.
+    pub fn restart(&mut self) -> Result<(), String> {
+        if matches!(self.producer, Producer::Stdin { .. }) {
+            return Err("A capture read from a pipe cannot be started again.".into());
+        }
+        self.stop();
+        // dumpcap starts its file afresh; emptying it first means nobody
+        // reads the old packets in the moment before it does.
+        File::create(&self.path).map_err(|e| format!("could not empty the capture file: {e}"))?;
+        if let Producer::Dumpcap { child, log, how } = &mut self.producer {
+            *child = how.spawn(log)?;
+        }
+        self.stopped = false;
+        Ok(())
+    }
+
     /// The file being written.
     pub fn path(&self) -> &Path {
         &self.path
@@ -246,7 +280,7 @@ impl Capture {
     /// If the producer failed, why.
     pub fn failure(&mut self) -> Option<String> {
         match &mut self.producer {
-            Producer::Dumpcap { child, log } => match child.try_wait() {
+            Producer::Dumpcap { child, log, .. } => match child.try_wait() {
                 Ok(Some(status)) if !status.success() && !self.stopped => {
                     let text = fs::read_to_string(log).unwrap_or_default();
                     Some(dumpcap_failure(&text))

@@ -219,6 +219,10 @@ pub const SECTIONS: &[Section] = &[
             ),
             (":reload", "Reload the capture"),
             (":stop", "Stop a live capture"),
+            (
+                ":restart",
+                "Start a live capture again, dropping its packets",
+            ),
             (":quit", "Quit"),
         ],
     },

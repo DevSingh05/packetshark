@@ -99,6 +99,31 @@ impl App {
         }
     }
 
+    /// Throw away the packets captured so far and start the capture again.
+    pub(super) fn restart_capture(&mut self) {
+        let Some(capture) = &mut self.capture else {
+            return self.error("Only a live capture can be started again.");
+        };
+        if let Err(e) = capture.restart() {
+            return self.error(e);
+        }
+        // Everything about the old packets goes; what arrives from now on
+        // loads as a capture's first packets do.
+        self.status = None;
+        self.load = super::LoadState::Loading;
+        self.list.reset();
+        self.detail = None;
+        self.detail_requested = None;
+        self.marks.clear();
+        self.time_refs.clear();
+        self.local_marks.clear();
+        self.find = None;
+        self.overlay = None;
+        self.capture_failure_reported = false;
+        self.restart_tail();
+        self.info("Capture started again; the earlier packets are gone.");
+    }
+
     pub(super) fn on_paste(&mut self, text: &str) {
         if let Some(prompt) = &mut self.prompt {
             prompt.input.insert_str(text);

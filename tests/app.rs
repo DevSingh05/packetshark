@@ -3314,3 +3314,21 @@ fn the_wireshark_profile_can_be_switched_while_running() {
     assert_eq!(h.bg_at(40, 4), red);
     h.assert_screen_lacks("HTTP/1.1 200 OK");
 }
+
+#[test]
+fn only_a_live_capture_can_be_started_again() {
+    let Some(mut h) = Harness::open(&pcap::web()) else {
+        return;
+    };
+    h.keys(":restart\n");
+    assert!(
+        h.message().contains("Only a live capture"),
+        "{}",
+        h.message()
+    );
+    assert_eq!(
+        h.app.frames(),
+        21,
+        "nothing happened to the file that is open"
+    );
+}
