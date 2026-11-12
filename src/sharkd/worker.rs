@@ -183,6 +183,7 @@ impl Worker {
                     launch,
                     client,
                     loaded: None,
+                    loads: 0,
                     deliver: Box::new(deliver),
                     pid: shared_pid,
                     stopping: shared_stopping,
@@ -234,9 +235,31 @@ struct Runner {
     launch: Launch,
     client: Client,
     loaded: Option<PathBuf>,
+    /// Successful loads so far; see [`cache_key`].
+    loads: u32,
     deliver: Box<dyn Fn(Reply) + Send>,
     pid: Arc<AtomicU32>,
     stopping: Arc<AtomicBool>,
+}
+
+/// The filter as it is sent to sharkd for list queries.
+///
+/// sharkd caches which frames match a filter, keyed by the filter's text.
+/// Before Wireshark 4.4.16 and 4.6.5 it kept that cache when a capture was
+/// loaded, so after a reload (or `:open`) a filter still answered for the
+/// old file. Whitespace is not significant in a display filter, so each load
+/// after the first appends a different run of it and misses the stale entry.
+fn cache_key(filter: &str, loads: u32) -> String {
+    let mut key = filter.to_owned();
+    if filter.is_empty() {
+        return key;
+    }
+    let mut epoch = loads.saturating_sub(1);
+    while epoch > 0 {
+        key.push(if epoch & 1 == 1 { '\t' } else { ' ' });
+        epoch >>= 1;
+    }
+    key
 }
 
 impl Runner {
@@ -312,6 +335,7 @@ impl Runner {
                 let result = self.load(&path)?;
                 if result.is_ok() {
                     self.loaded = Some(path.clone());
+                    self.loads += 1;
                 }
                 Reply::Loaded { path, result }
             }
@@ -329,7 +353,7 @@ impl Runner {
             } => {
                 let mut params = Map::new();
                 if !filter.is_empty() {
-                    params.insert("filter".into(), filter.into());
+                    params.insert("filter".into(), cache_key(&filter, self.loads).into());
                 }
                 // sharkd rejects an explicit zero for either of these.
                 if skip > 0 {
@@ -492,7 +516,10 @@ impl Runner {
                 .map(|s| s.frames);
         }
         self.client
-            .call::<Intervals>("intervals", json!({ "filter": filter }))
+            .call::<Intervals>(
+                "intervals",
+                json!({ "filter": cache_key(filter, self.loads) }),
+            )
             .map(|i| i.frames)
     }
 
@@ -503,7 +530,7 @@ impl Runner {
             params["skip"] = index.into();
         }
         if !filter.is_empty() {
-            params["filter"] = filter.into();
+            params["filter"] = cache_key(filter, self.loads).into();
         }
         let rows: Vec<FrameRow> = self.client.call("frames", params)?;
         Ok(rows.first().map(|r| r.num))
@@ -680,6 +707,20 @@ fn generation_of(r: &Request) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_load_gets_its_own_filter_cache_key() {
+        // The first load, and an empty filter, are sent as they are.
+        assert_eq!(cache_key("dns", 0), "dns");
+        assert_eq!(cache_key("dns", 1), "dns");
+        assert_eq!(cache_key("", 7), "");
+        // Later loads differ from each other only in trailing whitespace.
+        let keys: std::collections::HashSet<String> =
+            (1..=300).map(|loads| cache_key("dns", loads)).collect();
+        assert_eq!(keys.len(), 300);
+        assert!(keys.iter().all(|k| k.trim_end() == "dns"));
+        assert!(keys.iter().all(|k| k.len() <= "dns".len() + 9));
+    }
 
     fn frames(generation: u64, skip: u32) -> Request {
         Request::Frames {
