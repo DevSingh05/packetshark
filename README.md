@@ -56,6 +56,14 @@ newer:
 cargo install --git https://github.com/DevSingh05/packetshark
 ```
 
+On macOS, prefer Homebrew. The release binaries are not signed with an Apple
+developer certificate, so one downloaded with a browser is blocked the first
+time it is run. If you do download one, clear the block with:
+
+```sh
+xattr -d com.apple.quarantine packetshark
+```
+
 However you install it, packetshark needs Wireshark's command-line tools.
 `sharkd` is required; `dumpcap` is used for live capture and `tshark` for
 saving filtered packets.
