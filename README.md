@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/DevSingh05/packetshark/actions/workflows/ci.yml/badge.svg)](https://github.com/DevSingh05/packetshark/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/DevSingh05/packetshark)](https://github.com/DevSingh05/packetshark/releases/latest)
+[![crates.io](https://img.shields.io/crates/v/packetshark)](https://crates.io/crates/packetshark)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
 A terminal UI for Wireshark. Packet list, protocol details and bytes in three
@@ -57,7 +58,7 @@ ones are static and run on any distribution. Or build it with Rust 1.88 or
 newer:
 
 ```sh
-cargo install --git https://github.com/DevSingh05/packetshark
+cargo install packetshark
 ```
 
 On macOS, prefer Homebrew. The release binaries are not signed with an Apple
