@@ -13,6 +13,8 @@ packetshark does no dissection of its own. It drives **sharkd**, the JSON-RPC
 daemon that ships with Wireshark, so every protocol, display filter, colouring
 rule and preference Wireshark has works here, with the same results.
 
+![A short recording: opening a capture, filtering for failed HTTP responses, following the stream of one, then expert information, the packets-over-time graph and sorting by length](docs/demo.gif)
+
 ![packetshark showing a TLS session it has decrypted: the packet list, the HTTP header selected in the details tree, and its bytes highlighted in the hex view](docs/screenshot.png)
 
 ## What it does
