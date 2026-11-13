@@ -14,3 +14,7 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+    ignore:
+      # The msrv job pins this action's tag to the oldest Rust supported;
+      # it moves when the minimum version does, by hand.
+      - dependency-name: dtolnay/rust-toolchain
